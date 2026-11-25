@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+*.js.map
+
+# DB and sessions (never commit)
+data/
+sessions/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo

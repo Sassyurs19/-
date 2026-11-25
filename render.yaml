@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: jagent-bot
+    env: node
+    plan: starter
+    buildCommand: "npm install && npm install -g @binance/agentic-wallet@1.12.0 && npm run build"
+    startCommand: "npm start"
+    healthCheckPath: /
+    disk:
+      name: jagent-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /data/jagent.db
+      - key: SESSIONS_DIR
+        value: /data/sessions
+      - key: LOG_LEVEL
+        value: info
+      - key: JAGER_API_BASE
+        value: https://jager.live/api
+      - key: BSC_RPC_URL
+        value: https://bsc-rpc.publicnode.com
+      - key: BOT_TIMEZONE
+        value: Asia/Kolkata
+      # Set these as secrets in Render dashboard:
+      # BOT_TOKEN, ADMIN_ID, ADMIN_REF, ENCRYPTION_KEY
