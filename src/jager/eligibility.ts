@@ -354,12 +354,33 @@ export async function scanOnChainMints(
   };
 }
 
+export interface EligibilityProgress {
+  percent: number;
+  stage: string;
+  agentId?: string | null;
+}
+
 export async function runEligibilityChecks(
   walletAddress: string,
   sessionDir: string,
-  requestedShares?: number
+  requestedShares?: number,
+  onProgress?: (info: EligibilityProgress) => Promise<void> | void
 ): Promise<EligibilityResult> {
   const checks: EligibilityCheck[] = [];
+  let knownAgentId: string | null | undefined = undefined;
+  let maxPct = 0;
+  let progressChain: Promise<void> = Promise.resolve();
+
+  const emitProgress = (percent: number, stage: string, agentOverride?: string | null): void => {
+    if (agentOverride !== undefined) knownAgentId = agentOverride;
+    if (!onProgress) return;
+    if (percent > maxPct) maxPct = percent;
+    const pct = maxPct;
+    const aid = knownAgentId;
+    progressChain = progressChain
+      .then(() => Promise.resolve(onProgress({ percent: pct, stage, agentId: aid })))
+      .catch(() => {});
+  };
 
   // Check if baw session is currently connected
   let sessionConnected = false;
@@ -369,6 +390,36 @@ export async function runEligibilityChecks(
   } catch {
     sessionConnected = false;
   }
+
+  emitProgress(25, 'Resolving .ai Agent ID & mint quota...');
+
+  const agentStatusPromise = getAgentStatus(walletAddress).then((s) => {
+    emitProgress(45, 'Checking Developer Mode & mint history...', s.agentId ?? null);
+    return s;
+  });
+
+  const bawAgentPromise = sessionConnected
+    ? bawAgentId(sessionDir).then((res) => {
+        if (res.success && res.data.claimed && res.data.agentId && !knownAgentId) {
+          emitProgress(55, 'Verifying Developer Mode & balances...', res.data.agentId);
+        }
+        return res;
+      })
+    : Promise.reject(new Error('Session not connected'));
+
+  const settingsPromise = sessionConnected
+    ? bawSettings(sessionDir).then((res) => {
+        emitProgress(70, 'Checking USDT & BNB balances...');
+        return res;
+      })
+    : Promise.reject(new Error('Session not connected'));
+
+  const onChainPromise = scanOnChainMints(walletAddress, sessionConnected ? sessionDir : undefined).then(
+    (res) => {
+      emitProgress(85, 'Finalizing on-chain checks...');
+      return res;
+    }
+  );
 
   const [
     agentStatusRes,
@@ -380,11 +431,11 @@ export async function runEligibilityChecks(
     bnbBalRes,
     jagentBalRes,
   ] = await Promise.allSettled([
-    getAgentStatus(walletAddress),
+    agentStatusPromise,
     getJagerStats(),
-    scanOnChainMints(walletAddress, sessionConnected ? sessionDir : undefined),
-    sessionConnected ? bawSettings(sessionDir) : Promise.reject(new Error('Session not connected')),
-    sessionConnected ? bawAgentId(sessionDir) : Promise.reject(new Error('Session not connected')),
+    onChainPromise,
+    settingsPromise,
+    bawAgentPromise,
     sessionConnected
       ? bawBalance(sessionDir, { tokenAddress: config.USDT_BSC, binanceChainId: config.BINANCE_CHAIN_ID })
       : Promise.reject(new Error('Session not connected')),
@@ -598,6 +649,9 @@ export async function runEligibilityChecks(
     .filter((c) => c.required !== false && c.name !== 'check_usdt')
     .every((c) => c.passed);
   const allPassed = !alreadyMinted && corePassed && (usdtOk || canMintViaBnb);
+
+  emitProgress(100, 'Eligibility checks complete!', agentId);
+  await progressChain;
 
   return {
     checks,

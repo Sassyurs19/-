@@ -33,7 +33,10 @@ export function walletActionsKeyboard(
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
 
-  if (isConnected && !opts.alreadyMinted) {
+  if (opts.alreadyMinted) {
+    kb.text(t('btn_add_new_wallet', lang), 'connect_wallet').row();
+    kb.text(t('btn_back', lang), 'main_menu');
+  } else if (isConnected) {
     kb.text(t('btn_refresh', lang), `check:${walletId}`);
     if (opts.canMint !== false) {
       kb.text(t('btn_mint', lang), `mint_start:${walletId}`);

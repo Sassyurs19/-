@@ -34,6 +34,7 @@ import {
 import {
   clearSessionTimer,
   ensureSessionTimer,
+  formatConnectProgressCard,
   formatRemainingWindow,
   getSessionExpiryMs,
   untrackWelcomeMsg,
@@ -283,11 +284,36 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
         return;
       }
 
-      await ctx.editMessageText('🔍 <b>Refreshing eligibility checks...</b>', {
+      let lastProgressText = formatConnectProgressCard({
+        walletLabel: wallet.label,
+        address: wallet.address,
+        agentId: wallet.agent_id ?? undefined,
+        percent: 15,
+        stageText: 'Refreshing eligibility checks...',
+        statusText: '🔍 Refreshing',
+      });
+      await ctx.editMessageText(lastProgressText, {
         parse_mode: 'HTML',
       }).catch(() => {});
 
-      const eligResult = await runEligibilityChecks(wallet.address, wallet.session_dir);
+      const eligResult = await runEligibilityChecks(
+        wallet.address,
+        wallet.session_dir,
+        undefined,
+        async (prog) => {
+          const nextText = formatConnectProgressCard({
+            walletLabel: wallet.label,
+            address: wallet.address,
+            agentId: prog.agentId !== undefined ? prog.agentId : (wallet.agent_id ?? undefined),
+            percent: prog.percent,
+            stageText: prog.stage,
+            statusText: '🔍 Refreshing',
+          });
+          if (nextText === lastProgressText) return;
+          lastProgressText = nextText;
+          await ctx.editMessageText(nextText, { parse_mode: 'HTML' }).catch(() => {});
+        }
+      );
       const usdtNeeded = calcUsdtNeeded(eligResult.priceUsdtPerShare, eligResult.sharesPerMint);
 
       if (eligResult.agentId) updateWalletAgentId(walletId, eligResult.agentId);

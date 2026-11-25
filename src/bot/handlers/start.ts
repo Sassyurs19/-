@@ -43,9 +43,11 @@ import {
   clearTransientMsgs,
   clearWelcomeMsg,
   ensureSessionTimer,
+  formatConnectProgressCard,
   formatRemainingWindow,
   trackTransientMsg,
   trackWelcomeMsg,
+  untrackTransientMsg,
 } from '../sessionLifecycle';
 
 // Track active background verify tasks per user so [Cancel] stops them immediately
@@ -417,15 +419,33 @@ async function runBackgroundVerify(params: {
     upsertUser(telegramId);
     const wallet = addWallet(telegramId, address, finalDir);
 
-    const checkingMsg = await bot.api.sendMessage(
-      chatId,
-      t('connect_success', lang, address, wallet.label ?? undefined),
-      { parse_mode: 'HTML' }
-    );
+    let lastProgressText = formatConnectProgressCard({
+      walletLabel: wallet.label,
+      address,
+      agentId: wallet.agent_id ?? undefined,
+      percent: 15,
+      stageText: 'Connected · Starting eligibility checks...',
+    });
+    const checkingMsg = await bot.api.sendMessage(chatId, lastProgressText, {
+      parse_mode: 'HTML',
+    });
     trackTransientMsg(chatId, checkingMsg.message_id);
 
     try {
-      const eligResult = await runEligibilityChecks(address, finalDir);
+      const eligResult = await runEligibilityChecks(address, finalDir, undefined, async (prog) => {
+        const nextText = formatConnectProgressCard({
+          walletLabel: wallet.label,
+          address,
+          agentId: prog.agentId !== undefined ? prog.agentId : (wallet.agent_id ?? undefined),
+          percent: prog.percent,
+          stageText: prog.stage,
+        });
+        if (nextText === lastProgressText) return;
+        lastProgressText = nextText;
+        await bot.api
+          .editMessageText(chatId, checkingMsg.message_id, nextText, { parse_mode: 'HTML' })
+          .catch(() => {});
+      });
       const usdtNeeded = calcUsdtNeeded(eligResult.priceUsdtPerShare, eligResult.sharesPerMint);
 
       if (eligResult.agentId) updateWalletAgentId(wallet.id, eligResult.agentId);
@@ -447,9 +467,6 @@ async function runBackgroundVerify(params: {
         all_ok: eligResult.allPassed ? 1 : 0,
       });
 
-      // Remove transient "Connected · Running eligibility checks..." message
-      await clearTransientMsgs(bot.api, chatId);
-
       // Rule 1: If user HAS already minted -> log out immediately + send explicit logout reason
       if (eligResult.alreadyMinted) {
         clearSessionTimer(wallet.id);
@@ -461,14 +478,19 @@ async function runBackgroundVerify(params: {
           wallet.label
         );
         const reason = `${wallet.label ?? 'This wallet'} already minted before (${eligResult.prevMint.shares || '?'} shares).`;
-        await bot.api.sendMessage(
-          chatId,
-          `${checksText}\n\n${t('session_logged_out_minted', lang, reason)}`,
-          {
+        const finalText = `${checksText}\n\n${t('session_logged_out_minted', lang, reason)}`;
+        const kb = walletActionsKeyboard(wallet.id, lang, false, { alreadyMinted: true });
+
+        untrackTransientMsg(chatId, checkingMsg.message_id);
+        await bot.api
+          .editMessageText(chatId, checkingMsg.message_id, finalText, {
             parse_mode: 'HTML',
-            reply_markup: walletActionsKeyboard(wallet.id, lang, false, { alreadyMinted: true }),
-          }
-        );
+            reply_markup: kb,
+          })
+          .catch(async () => {
+            await clearTransientMsgs(bot.api, chatId);
+            await bot.api.sendMessage(chatId, finalText, { parse_mode: 'HTML', reply_markup: kb });
+          });
         return;
       }
 
@@ -489,14 +511,21 @@ async function runBackgroundVerify(params: {
         timerNote,
         wallet.label
       );
-
-      await bot.api.sendMessage(chatId, checksText, {
-        parse_mode: 'HTML',
-        reply_markup: walletActionsKeyboard(wallet.id, lang, true, {
-          alreadyMinted: false,
-          canMint: eligResult.allPassed,
-        }),
+      const kb = walletActionsKeyboard(wallet.id, lang, true, {
+        alreadyMinted: false,
+        canMint: eligResult.allPassed,
       });
+
+      untrackTransientMsg(chatId, checkingMsg.message_id);
+      await bot.api
+        .editMessageText(chatId, checkingMsg.message_id, checksText, {
+          parse_mode: 'HTML',
+          reply_markup: kb,
+        })
+        .catch(async () => {
+          await clearTransientMsgs(bot.api, chatId);
+          await bot.api.sendMessage(chatId, checksText, { parse_mode: 'HTML', reply_markup: kb });
+        });
     } catch (eligErr) {
       logger.error('Post-connect eligibility check error', { eligErr });
       await clearTransientMsgs(bot.api, chatId);

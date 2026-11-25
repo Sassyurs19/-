@@ -58,6 +58,7 @@ import {
   clearTransientMsgs,
   clearWelcomeMsg,
   ensureSessionTimer,
+  formatConnectProgressCard,
   getSessionExpiryMs,
   renderProgressBar,
   trackTransientMsg,
@@ -66,6 +67,7 @@ import {
 } from '../src/bot/sessionLifecycle';
 import { assertSafeSessionPath, buildSanitizedBawEnv } from '../src/wallet/baw';
 import { releaseWalletOp, tryAcquireWalletOp } from '../src/core/rateLimit';
+import { walletActionsKeyboard } from '../src/bot/keyboards';
 
 describe('Eligibility Check Logic (Production Functions)', () => {
   describe('USDT sufficiency & 1.02x cost calculation', () => {
@@ -209,6 +211,29 @@ describe('Progress bar, transient cleanup & 20-min timer lifecycle', () => {
     expect(renderProgressBar(20)).toContain('██░░░░░░░░');
     expect(renderProgressBar(100)).toContain('██████████');
     expect(renderProgressBar(100)).toContain('100%');
+  });
+
+  it('renders connect progress card with wallet label, Agent ID, and loading bar', () => {
+    const html = formatConnectProgressCard({
+      walletLabel: 'Wallet 1',
+      address: '0xD08f132905Cdfedbb0f57E13b61378AC0b5dFbf4',
+      agentId: 'sassy19.ai',
+      percent: 45,
+      stageText: 'Checking Developer Mode & mint history...',
+    });
+    expect(html).toContain('Wallet 1');
+    expect(html).toContain('0xD08f...Fbf4');
+    expect(html).toContain('sassy19.ai');
+    expect(html).toContain('45%');
+    expect(html).toContain('█████░░░░░');
+  });
+
+  it('shows only Add New Wallet and Back buttons when wallet already minted', () => {
+    const kb = walletActionsKeyboard(1, 'en', false, { alreadyMinted: true });
+    const buttons = kb.inline_keyboard.flat();
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]).toMatchObject({ text: '+ Add New Wallet', callback_data: 'connect_wallet' });
+    expect(buttons[1]).toMatchObject({ text: '← Back', callback_data: 'main_menu' });
   });
 
   it('tracks and deletes transient messages without deleting untracked ones', async () => {

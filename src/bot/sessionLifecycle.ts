@@ -46,6 +46,15 @@ export function trackTransientMsg(chatId: number, messageId: number): void {
   transientMessages.set(chatId, list);
 }
 
+/** Stop tracking a transient message when promoted in-place to a permanent result card */
+export function untrackTransientMsg(chatId: number, messageId: number): void {
+  const list = transientMessages.get(chatId);
+  if (!list || list.length === 0) return;
+  const next = list.filter((id) => id !== messageId);
+  if (next.length === 0) transientMessages.delete(chatId);
+  else transientMessages.set(chatId, next);
+}
+
 /** Delete all currently tracked transient messages in a chat, keeping important cards intact */
 export async function clearTransientMsgs(api: Api, chatId: number): Promise<void> {
   const ids = transientMessages.get(chatId);
@@ -178,4 +187,32 @@ export function renderProgressBar(percent: number, width = 10): string {
   const filled = Math.round((clamped / 100) * width);
   const empty = Math.max(0, width - filled);
   return `<code>[${'█'.repeat(filled)}${'░'.repeat(empty)}]</code> <b>${clamped}%</b>`;
+}
+
+export function formatConnectProgressCard(params: {
+  walletLabel?: string | null;
+  address: string;
+  agentId?: string | null;
+  percent: number;
+  stageText: string;
+  statusText?: string;
+}): string {
+  const name = params.walletLabel ?? 'Wallet';
+  const short = `${params.address.slice(0, 6)}...${params.address.slice(-4)}`;
+  const agentDisplay =
+    params.agentId === undefined
+      ? 'Checking...'
+      : params.agentId
+        ? params.agentId
+        : 'None';
+  const statusLine = params.statusText ?? '🟢 Connected';
+  return (
+    `<b>✦ ＪＡＧΞＲ · ${esc(name)}</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `<blockquote>• <b>Status</b> — <b>${esc(statusLine)}</b>\n` +
+    `• <b>Address</b> — <code>${esc(short)}</code>\n` +
+    `• <b>Agent ID</b> — <code>${esc(agentDisplay)}</code></blockquote>\n` +
+    `<blockquote>${renderProgressBar(params.percent)}\n` +
+    `• <b>${esc(params.stageText)}</b></blockquote>`
+  );
 }
