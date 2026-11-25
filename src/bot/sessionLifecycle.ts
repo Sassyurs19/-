@@ -6,7 +6,7 @@
 import { Api } from 'grammy';
 import { config } from '../config';
 import { logger } from '../core/logger';
-import { esc, Lang } from '../i18n';
+import { brandHeader, esc, Lang } from '../i18n';
 import { formatClockInTz } from '../jager/eligibility';
 import { logoutAndWipeSession } from '../wallet/baw';
 
@@ -154,8 +154,8 @@ async function handleSessionTimeout(
     : `<code>${esc(short)}</code>`;
   const msg =
     lang === 'te'
-      ? `🔒 <b>సెషన్ లాగ్‌అవుట్ అయింది</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>వాలెట్</b> — ${walletTag}\n• <b>కారణం</b> — ${config.sessionTimeoutMinutes} నిమిషాల్లో మింటింగ్ పూర్తి కాలేదు.</blockquote>\n\n<b>కొనసాగడానికి + కొత్త వాలెట్ నొక్కండి.</b>`
-      : `🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>Wallet</b> — ${walletTag}\n• <b>Reason</b> — ${config.sessionTimeoutMinutes}-min window expired before minting.</blockquote>\n\n<b>Reconnect anytime via + Connect Wallet.</b>`;
+      ? `${brandHeader('సెషన్ లాగ్‌అవుట్')}\n\n<blockquote>• <b>వాలెట్</b> — ${walletTag}\n• <b>కారణం</b> — ${config.sessionTimeoutMinutes} నిమిషాల్లో మింటింగ్ పూర్తి కాలేదు.</blockquote>\n\n<b>కొనసాగడానికి + కొత్త వాలెట్ నొక్కండి.</b>`
+      : `${brandHeader('Session Logged Out')}\n\n<blockquote>• <b>Wallet</b> — ${walletTag}\n• <b>Reason</b> — ${config.sessionTimeoutMinutes}-min window expired before mint.</blockquote>\n\n<b>Reconnect anytime via + Connect Wallet.</b>`;
 
   await api.sendMessage(entry.chatId, msg, { parse_mode: 'HTML' }).catch(() => {});
 }
@@ -207,11 +207,10 @@ export function formatConnectProgressCard(params: {
         : 'None';
   const statusLine = params.statusText ?? '🟢 Connected';
   return (
-    `<b>✦ ＪＡＧΞＲ · ${esc(name)}</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `${brandHeader(`Connect · ${name}`)}\n\n` +
     `<blockquote>• <b>Status</b> — <b>${esc(statusLine)}</b>\n` +
     `• <b>Address</b> — <code>${esc(short)}</code>\n` +
-    `• <b>Agent ID</b> — <code>${esc(agentDisplay)}</code></blockquote>\n` +
+    `• <b>Agent ID</b> — <code>${esc(agentDisplay)}</code></blockquote>\n\n` +
     `<blockquote>${renderProgressBar(params.percent)}\n` +
     `• <b>${esc(params.stageText)}</b></blockquote>`
   );

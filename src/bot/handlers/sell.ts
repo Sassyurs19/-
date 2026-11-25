@@ -3,7 +3,7 @@
 import fs from 'fs';
 import { Bot } from 'grammy';
 import { JagentContext } from '../middleware';
-import { esc, t } from '../../i18n';
+import { brandHeader, esc, t } from '../../i18n';
 import {
   backToMainKeyboard,
   sellConfirmKeyboard,
@@ -62,7 +62,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
     if (!connected) {
       clearSessionTimer(walletId);
       await ctx.editMessageText(
-        '🔒 <b>Session Logged Out</b>\n─────────────────\nTap <b>Reconnect</b> to connect your wallet again.',
+        `${brandHeader('Session Logged Out')}\n\nTap <b>Reconnect</b> to connect your wallet again.`,
         { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
       );
       return;
@@ -101,7 +101,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
     };
 
     await ctx.editMessageText(
-      `${t('sell_title', lang)}\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>Balance</b> — <code>${esc(jagentAmount)} JAGENT</code></blockquote>\n\n<b>Select percentage to sell:</b>`,
+      `${t('sell_title', lang)}\n\n<blockquote>• <b>Balance</b> — <code>${esc(jagentAmount)} JAGENT</code></blockquote>\n\n<b>Select percentage to sell:</b>`,
       {
         parse_mode: 'HTML',
         reply_markup: sellPercentKeyboard(walletId, lang),
@@ -139,7 +139,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
     pending.amount = selectedAmt;
 
     await ctx.editMessageText(
-      `${t('sell_title', lang)}\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>Amount</b> — <code>${esc(selectedAmt)} JAGENT</code> (<b>${pct}%</b>)</blockquote>\n\n<b>Select receive token:</b>`,
+      `${t('sell_title', lang)}\n\n<blockquote>• <b>Amount</b> — <code>${esc(selectedAmt)} JAGENT</code> (<b>${pct}%</b>)</blockquote>\n\n<b>Select receive token:</b>`,
       {
         parse_mode: 'HTML',
         reply_markup: sellTokenKeyboard(walletId, lang),
@@ -186,7 +186,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
         ctx.session.pendingSell = undefined;
         clearSessionTimer(walletId);
         await ctx.editMessageText(
-          '🔒 <b>Session Logged Out</b>\n─────────────────\nTap <b>Reconnect</b> to connect your wallet again.',
+          `${brandHeader('Session Logged Out')}\n\nTap <b>Reconnect</b> to connect your wallet again.`,
           { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
         );
         return;
@@ -269,7 +269,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
         ctx.session.pendingSell = undefined;
         clearSessionTimer(walletId);
         await ctx.editMessageText(
-          '🔒 <b>Session Logged Out</b>\n─────────────────\nTap <b>Reconnect</b> to connect your wallet again.',
+          `${brandHeader('Session Logged Out')}\n\nTap <b>Reconnect</b> to connect your wallet again.`,
           { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
         );
         return;
@@ -278,7 +278,7 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
       ctx.session.pendingSell = undefined;
 
       await ctx.editMessageText(
-        `<b>✦ ＪＡＧΞＲ · Selling JAGENT</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>${renderProgressBar(40)}\n• <b>Broadcasting swap &amp; awaiting confirmation...</b></blockquote>`,
+        `${brandHeader('Selling · JAGENT')}\n\n<blockquote>${renderProgressBar(40)}\n• <b>Broadcasting swap &amp; awaiting confirmation...</b></blockquote>`,
         { parse_mode: 'HTML' }
       ).catch(() => {});
 

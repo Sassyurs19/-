@@ -3,7 +3,7 @@
 import { Bot, InputFile } from 'grammy';
 import QRCode from 'qrcode';
 import { JagentContext } from '../middleware';
-import { esc, Lang, t } from '../../i18n';
+import { brandHeader, esc, Lang, t } from '../../i18n';
 import {
   backToMainKeyboard,
   connectCancelKeyboard,
@@ -477,19 +477,17 @@ async function runBackgroundVerify(params: {
           undefined,
           wallet.label
         );
-        const reason = `${wallet.label ?? 'This wallet'} already minted before (${eligResult.prevMint.shares || '?'} shares).`;
-        const finalText = `${checksText}\n\n${t('session_logged_out_minted', lang, reason)}`;
         const kb = walletActionsKeyboard(wallet.id, lang, false, { alreadyMinted: true });
 
         untrackTransientMsg(chatId, checkingMsg.message_id);
         await bot.api
-          .editMessageText(chatId, checkingMsg.message_id, finalText, {
+          .editMessageText(chatId, checkingMsg.message_id, checksText, {
             parse_mode: 'HTML',
             reply_markup: kb,
           })
           .catch(async () => {
             await clearTransientMsgs(bot.api, chatId);
-            await bot.api.sendMessage(chatId, finalText, { parse_mode: 'HTML', reply_markup: kb });
+            await bot.api.sendMessage(chatId, checksText, { parse_mode: 'HTML', reply_markup: kb });
           });
         return;
       }
@@ -533,7 +531,7 @@ async function runBackgroundVerify(params: {
       await logoutAndWipeSession(finalDir);
       await bot.api.sendMessage(
         chatId,
-        `🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote><b>Reason:</b> Could not complete eligibility checks.</blockquote>\n<pre>${esc(eligErr instanceof Error ? eligErr.message : String(eligErr))}</pre>`,
+        `${brandHeader('Session Logged Out')}\n\n<blockquote>• <b>Reason</b> — Could not complete eligibility checks.</blockquote>\n<pre>${esc(eligErr instanceof Error ? eligErr.message : String(eligErr))}</pre>`,
         {
           parse_mode: 'HTML',
           reply_markup: walletActionsKeyboard(wallet.id, lang, false),

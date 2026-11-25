@@ -4,7 +4,7 @@ import { ethers } from 'ethers';
 import { config } from '../config';
 import { logger } from '../core/logger';
 import { EligibilityCheck } from '../core/errors';
-import { esc } from '../i18n';
+import { brandHeader, esc } from '../i18n';
 import { getAgentStatus, getJagerStats } from './api';
 import { withBscRpc } from './rpc';
 import {
@@ -526,19 +526,29 @@ export async function runEligibilityChecks(
     const enabled = Boolean(dm?.enabled);
     devModeExpiry = parseDevModeExpiry(dm?.expiresAt);
     const active = checkDevMode(enabled, dm?.expiresAt);
-    const expiryStr = devModeExpiry ? formatTimestampInTz(devModeExpiry, true) : active ? 'Active (no expiry)' : 'N/A';
+    const shortExp = devModeExpiry
+      ? formatShortTimestamp(devModeExpiry, true).split(',')[0] ?? ''
+      : '';
 
     let msg: string | undefined;
     if (!active) {
-      msg = 'Enable Developer Mode in Binance App → Agentic Wallet → Settings → Developer Mode.';
+      msg = 'Enable Dev Mode in Binance App Settings';
     } else if (dm?.balanceExceeded) {
-      msg = 'Warning: wallet balance exceeds your Developer Mode cap in Binance App settings.';
+      msg = 'Wallet balance exceeds Dev Mode cap';
     }
 
     checks.push({
       name: 'check_devmode',
       passed: active && !dm?.balanceExceeded,
-      value: active ? `Active (expires ${expiryStr})` : enabled ? `Expired (${expiryStr})` : 'Disabled',
+      value: active
+        ? shortExp
+          ? `Active · ${shortExp}`
+          : 'Active'
+        : enabled
+          ? shortExp
+            ? `Expired · ${shortExp}`
+            : 'Expired'
+          : 'Disabled',
       required: true,
       message: msg,
     });
@@ -546,9 +556,9 @@ export async function runEligibilityChecks(
     checks.push({
       name: 'check_devmode',
       passed: false,
-      value: sessionConnected ? 'Could not read settings' : 'Session logged out / expired',
+      value: sessionConnected ? 'Unavailable' : 'Logged out',
       required: true,
-      message: 'Connect or reconnect wallet to verify Developer Mode.',
+      message: 'Reconnect wallet to verify Dev Mode',
     });
   }
 
@@ -560,22 +570,12 @@ export async function runEligibilityChecks(
   const alreadyMinted = !checkNotAlreadyMinted(apiMinted, onChain.found);
   const totalPrevShares = apiMinted > 0 ? apiMinted : onChain.totalShares;
 
-  let prevValue = 'Fresh wallet (No prior mint)';
-  if (alreadyMinted) {
-    const parts = [`Already minted (${totalPrevShares || '?'} shares)`];
-    if (onChain.lastMintDate) parts.push(onChain.lastMintDate);
-    if (onChain.referrer) parts.push(`Ref: ${onChain.referrer}`);
-    prevValue = parts.join(' · ');
-  }
-
   checks.push({
     name: 'check_prev_mint',
     passed: !alreadyMinted,
-    value: prevValue,
+    value: alreadyMinted ? `Minted (${totalPrevShares || '?'} sh)` : 'Clean',
     required: true,
-    message: alreadyMinted
-      ? 'Wallet has already minted previously — session logged out.'
-      : undefined,
+    message: alreadyMinted ? 'Already minted — session logged out' : undefined,
   });
 
   // 4. Remaining mint quota
@@ -583,14 +583,14 @@ export async function runEligibilityChecks(
   const quotaOk = checkQuota(quotaRemaining, sharesNeededForCheck) && siteEntryOpen;
   let quotaMsg: string | undefined;
   if (!siteEntryOpen) {
-    quotaMsg = 'ＪＡＧΞＲ mint entry is currently closed.';
+    quotaMsg = 'Mint entry closed on ＪＡＧΞＲ';
   } else if (quotaRemaining < sharesNeededForCheck) {
-    quotaMsg = `Need at least ${sharesNeededForCheck} shares of quota remaining (have ${quotaRemaining}). Invite friends or finish social tasks.`;
+    quotaMsg = `Need ${sharesNeededForCheck} quota left (invite or do tasks)`;
   }
   checks.push({
     name: 'check_quota',
     passed: quotaOk,
-    value: `${quotaRemaining} remaining (min ${sharesNeededForCheck}/tx)`,
+    value: `${quotaRemaining} / ${sharesNeededForCheck} left`,
     required: true,
     message: quotaMsg,
   });
@@ -623,25 +623,30 @@ export async function runEligibilityChecks(
   const bnbMinForMint = bnbRequiredForMint ? parseFloat(bnbRequiredForMint) + config.MIN_BNB_GAS : Infinity;
   const canMintViaBnb = parseFloat(bnbBalance) >= bnbMinForMint;
 
+  const cleanUsdt = Number.isFinite(parseFloat(usdtBalance)) ? parseFloat(usdtBalance).toFixed(2) : '0.00';
+  const cleanUsdtNeed = Number.isFinite(parseFloat(usdtNeeded)) ? parseFloat(usdtNeeded).toFixed(2) : '0.00';
   checks.push({
     name: 'check_usdt',
     passed: usdtOk,
-    value: `${parseFloat(usdtBalance).toFixed(4)} USDT (need ${usdtNeeded})`,
+    value: `${cleanUsdt} / ${cleanUsdtNeed}`,
     required: true,
     message: usdtOk
       ? undefined
       : canMintViaBnb
-        ? `Insufficient USDT for USDT pay — however your BNB (${parseFloat(bnbBalance).toFixed(4)}) covers BNB pay!`
-        : `Top up USDT to at least ${usdtNeeded} USDT${bnbRequiredForMint ? ` (or ~${bnbMinForMint.toFixed(4)} BNB for BNB pay)` : ''}.`,
+        ? 'USDT low — BNB balance covers BNB pay'
+        : `Add USDT (>= ${cleanUsdtNeed})${bnbRequiredForMint ? ` or ~${bnbMinForMint.toFixed(3)} BNB` : ''}`,
   });
 
   const bnbOk = checkBnbGas(bnbBalance);
+  const bnbNum = parseFloat(bnbBalance);
+  const cleanBnb =
+    !Number.isFinite(bnbNum) || bnbNum === 0 ? '0' : bnbNum.toFixed(6).replace(/\.?0+$/, '');
   checks.push({
     name: 'check_bnb',
     passed: bnbOk,
-    value: `${parseFloat(bnbBalance).toFixed(6)} BNB (min ${config.MIN_BNB_GAS})`,
+    value: `${cleanBnb} / ${config.MIN_BNB_GAS}`,
     required: true,
-    message: bnbOk ? undefined : `Top up at least ${config.MIN_BNB_GAS} BNB on BSC (BEP-20) for gas.`,
+    message: bnbOk ? undefined : `Add >= ${config.MIN_BNB_GAS} BNB for BSC gas`,
   });
 
   // Core required checks pass if AgentID, DevMode, Quota, Gas pass AND at least one payment method (USDT or BNB) is funded
@@ -688,7 +693,6 @@ export function formatEligibilityChecks(
   timerNote?: string,
   walletLabel?: string | null
 ): string {
-  const LINE = '━━━━━━━━━━━━━━━━━━━━';
   const rows: string[] = [];
   for (const c of result.checks) {
     const icon = c.passed
@@ -699,34 +703,29 @@ export function formatEligibilityChecks(
     rows.push(`${icon} <b>${esc(t(c.name))}</b> — <code>${esc(c.value)}</code>`);
     if (c.name === 'check_prev_mint' && result.prevMint.txHashes.length > 0) {
       const links = result.prevMint.txHashes
-        .slice(0, 3)
-        .map((h) => `<a href="https://bscscan.com/tx/${esc(h)}">${esc(h.slice(0, 10))}...</a>`)
+        .slice(0, 2)
+        .map((h) => `<a href="https://bscscan.com/tx/${esc(h)}">${esc(h.slice(0, 8))}...</a>`)
         .join(' · ');
-      rows.push(`   • <b>TX:</b> ${links}`);
+      rows.push(`  ↳ <b>TX:</b> ${links}`);
     }
-    if (!c.passed && c.message) {
-      rows.push(`   • <b>Fix:</b> ${esc(c.message)}`);
+    if (!result.alreadyMinted && !c.passed && c.message) {
+      rows.push(`  ↳ ${esc(c.message)}`);
     }
   }
 
-  const footer = result.alreadyMinted
-    ? t('eligibility_failed_minted')
-    : result.allPassed
-      ? t('eligibility_passed')
-      : t('eligibility_failed');
+  const subTitle = walletLabel ? `${t('eligibility_title')} · ${walletLabel}` : t('eligibility_title');
+  const lines = [brandHeader(subTitle), '', `<blockquote>${rows.join('\n')}</blockquote>`];
 
-  const header = walletLabel
-    ? `${t('eligibility_title')} · <b>${esc(walletLabel)}</b>`
-    : t('eligibility_title');
-
-  const lines = [
-    header,
-    LINE,
-    `<blockquote>${rows.join('\n')}</blockquote>`,
-    footer,
-  ];
-  if (timerNote) {
-    lines.push(`⏱ <b>${esc(timerNote)}</b>`);
+  if (result.alreadyMinted) {
+    const sh = result.prevMint.shares ? `<b>${result.prevMint.shares} shares</b>` : 'previously';
+    lines.push('', `<blockquote>🔒 <b>Logged Out</b> — Already minted (${sh}).</blockquote>`);
+  } else {
+    const footer = result.allPassed ? t('eligibility_passed') : t('eligibility_failed');
+    lines.push('', footer);
+    if (timerNote) {
+      lines.push(`⏱ <code>${esc(timerNote)}</code>`);
+    }
   }
+
   return lines.join('\n');
 }

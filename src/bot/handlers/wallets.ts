@@ -4,7 +4,7 @@
 import fs from 'fs';
 import { Bot } from 'grammy';
 import { JagentContext } from '../middleware';
-import { esc, t } from '../../i18n';
+import { brandHeader, esc, t } from '../../i18n';
 import {
   backToMainKeyboard,
   statusDetailKeyboard,
@@ -188,8 +188,8 @@ export async function formatWalletStatusReport(walletId: number): Promise<string
   }
 
   const lines: string[] = [
-    `<b>✦ ＪＡＧΞＲ · ${esc(walletName)}</b>`,
-    `━━━━━━━━━━━━━━━━━━━━`,
+    brandHeader(`Status · ${walletName}`),
+    '',
     `<blockquote>${overviewRows.join('\n')}</blockquote>`,
     `<blockquote>${historyRows.join('\n')}</blockquote>`,
     `⏱ <b>Updated:</b> ${esc(updatedTime)}`,
@@ -224,7 +224,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
 
     await editOrReplyHtml(
       ctx,
-      `<b>✦ ＪＡＧΞＲ · Connected Wallets</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>${lines.join('\n\n')}</blockquote>`,
+      `${brandHeader('Connected Wallets')}\n\n<blockquote>${lines.join('\n\n')}</blockquote>`,
       walletListKeyboard(wallets, lang)
     );
   });
@@ -250,7 +250,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
 
     await editOrReplyHtml(
       ctx,
-      `<b>✦ ＪＡＧΞＲ · ${esc(walletName)}</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+      `${brandHeader(walletName)}\n\n` +
         `<blockquote>• <b>Address</b> — <code>${esc(short)}</code>\n` +
         `• <b>Agent ID</b> — <code>${esc(wallet.agent_id ?? 'N/A')}</code>\n` +
         `• <b>Session</b> — <b>${connected ? '🟢 Connected' : '🔒 Logged out'}</b>${expiryMs ? ` (${esc(formatRemainingWindow(expiryMs))})` : ''}\n` +
@@ -346,10 +346,9 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
           undefined,
           wallet.label
         );
-        const reason = `${wallet.label ?? 'This wallet'} already minted before (${eligResult.prevMint.shares || '?'} shares).`;
         await editOrReplyHtml(
           ctx,
-          `${checksText}\n\n${t('session_logged_out_minted', lang, reason)}`,
+          checksText,
           walletActionsKeyboard(walletId, lang, false, { alreadyMinted: true })
         );
         return;
@@ -419,7 +418,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
     const short = `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`;
     await editOrReplyHtml(
       ctx,
-      `🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>Wallet</b> — <b>${esc(walletName)}</b> · <code>${esc(short)}</code>\n• <b>Reason</b> — Disconnected by user.</blockquote>`,
+      `${brandHeader('Session Logged Out')}\n\n<blockquote>• <b>Wallet</b> — <b>${esc(walletName)}</b> · <code>${esc(short)}</code>\n• <b>Reason</b> — Disconnected by user.</blockquote>`,
       backToMainKeyboard(lang)
     );
   });
@@ -458,7 +457,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
 
     await editOrReplyHtml(
       ctx,
-      `${t('status_title', lang)}\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>${lines.join('\n\n')}</blockquote>\n\n<b>Select a wallet for live status &amp; history:</b>`,
+      `${t('status_title', lang)}\n\n<blockquote>${lines.join('\n\n')}</blockquote>\n\n<b>Select a wallet for live status &amp; history:</b>`,
       statusWalletsKeyboard(wallets, lang)
     );
   });

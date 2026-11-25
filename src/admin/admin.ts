@@ -2,7 +2,7 @@
 // Admin panel (/admin): owner Telegram ID only — set referral code, max shares, pause/resume, view totals
 import { Bot } from 'grammy';
 import { JagentContext } from '../bot/middleware';
-import { esc, t } from '../i18n';
+import { brandHeader, esc, t } from '../i18n';
 import { adminKeyboard } from '../bot/keyboards';
 import {
   getAdminSettings,
@@ -16,8 +16,7 @@ import { clearTransientMsgs, trackTransientMsg } from '../bot/sessionLifecycle';
 function formatAdminHome(lang: 'en' | 'te'): string {
   const settings = getAdminSettings();
   return (
-    `${t('admin_title', lang)}\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `${t('admin_title', lang)}\n\n` +
     `<blockquote>• <b>Referral</b> — <code>${esc(settings.referral_code || 'not set')}</code>\n` +
     `• <b>Max Shares</b> — <b>${settings.max_shares}</b>\n` +
     `• <b>Minting</b> — <b>${settings.minting_paused ? '⏸ PAUSED' : '▶️ ACTIVE'}</b></blockquote>`
@@ -143,8 +142,7 @@ export function registerAdminHandlers(bot: Bot<JagentContext>): void {
     const totals = getAdminTotals();
     const settings = getAdminSettings();
     const text =
-      `<b>✦ ＪＡＧΞＲ · Bot Totals</b>\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `${brandHeader('Bot Totals')}\n\n` +
       `<blockquote>• <b>Users</b> — <b>${totals.total_users}</b>\n` +
       `• <b>Active Wallets</b> — <b>${totals.total_wallets}</b>\n` +
       `• <b>Mints</b> — <b>${totals.total_mints}</b> (Failed: ${totals.failed_mints})\n` +

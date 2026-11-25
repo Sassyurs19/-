@@ -4,7 +4,7 @@
 import { Api } from 'grammy';
 import { config } from '../config';
 import { logger } from '../core/logger';
-import { esc } from '../i18n';
+import { brandHeader, esc } from '../i18n';
 import {
   claimInviteRewards,
   ClaimInviteRewardsResponse,
@@ -200,7 +200,7 @@ export async function claimAdminAndNotify(params: {
                 await params.api
                   .sendMessage(
                     config.adminId,
-                    `<b>✦ ＪＡＧΞＲ · Admin Reward Settled</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>• <b>Paid</b> — <code>${esc(retryOutcome.paidUsdt)} USDT</code>${txPart ? `\n• <b>TX</b> — <a href="https://bscscan.com/tx/${esc(retryOutcome.txHash!)}">View TX</a>` : ''}</blockquote>`,
+                    `${brandHeader('Admin Reward Settled')}\n\n<blockquote>• <b>Paid</b> — <code>${esc(retryOutcome.paidUsdt)} USDT</code>${txPart ? `\n• <b>TX</b> — <a href="https://bscscan.com/tx/${esc(retryOutcome.txHash!)}">View TX</a>` : ''}</blockquote>`,
                     { parse_mode: 'HTML' }
                   )
                   .catch(() => {});
@@ -231,8 +231,7 @@ export async function claimAdminAndNotify(params: {
     : esc(params.userReward.message);
 
   const adminMsg =
-    `<b>✦ ＪＡＧΞＲ · Mint Completed</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `${brandHeader('Mint Completed')}\n\n` +
     `<blockquote>• <b>User</b> — ${userTag}\n` +
     `• <b>Wallet</b> — ${walletPrefix}<code>${esc(userShort)}</code> (<code>${esc(params.userAgentId ?? 'N/A')}</code>)\n` +
     `• <b>Minted</b> — <b>${params.shares} shares (${esc(params.payMethod.toUpperCase())})</b>\n` +

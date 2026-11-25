@@ -4,7 +4,7 @@
 import fs from 'fs';
 import { Bot } from 'grammy';
 import { JagentContext } from '../middleware';
-import { esc, t } from '../../i18n';
+import { brandHeader, esc, t } from '../../i18n';
 import {
   backToMainKeyboard,
   mintConfirmKeyboard,
@@ -42,8 +42,7 @@ async function isConnectedSession(sessionDir: string): Promise<boolean> {
 
 function formatProgressCard(percent: number, stageText: string): string {
   return (
-    `<b>✦ ＪＡＧΞＲ · Minting JAGENT</b>\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `${brandHeader('Minting · JAGENT')}\n\n` +
     `<blockquote>${renderProgressBar(percent)}\n` +
     `• <b>${esc(stageText)}</b></blockquote>`
   );
@@ -74,7 +73,7 @@ export function registerMintHandlers(bot: Bot<JagentContext>): void {
     if (!connected) {
       clearSessionTimer(walletId);
       await ctx.editMessageText(
-        '🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>Reconnect your wallet to mint.</b>',
+        `${brandHeader('Session Logged Out')}\n\n<b>Reconnect your wallet to mint.</b>`,
         { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
       );
       return;
@@ -120,7 +119,7 @@ export function registerMintHandlers(bot: Bot<JagentContext>): void {
     const maxShares = Math.min(settings.max_shares, quotaRemaining, 10);
     if (maxShares <= 0 || maxShares < sharesPerMint) {
       await ctx.editMessageText(
-        `❌ <b>Insufficient Quota</b>\n─────────────────\nRemaining: <code>${quotaRemaining}</code> · Required per tx: <b>${sharesPerMint}</b>.`,
+        `${brandHeader('Insufficient Quota')}\n\nRemaining: <code>${quotaRemaining}</code> · Need: <b>${sharesPerMint}</b>.`,
         {
           parse_mode: 'HTML',
           reply_markup: walletActionsKeyboard(walletId, lang, true, { canMint: false }),
@@ -214,7 +213,7 @@ export function registerMintHandlers(bot: Bot<JagentContext>): void {
       releaseWalletOp(walletId);
       clearSessionTimer(walletId);
       await ctx.editMessageText(
-        '🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>Reconnect your wallet to mint.</b>',
+        `${brandHeader('Session Logged Out')}\n\n<b>Reconnect your wallet to mint.</b>`,
         { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
       );
       return;
@@ -360,7 +359,7 @@ export function registerMintHandlers(bot: Bot<JagentContext>): void {
         ctx.session.pendingMint = undefined;
         clearSessionTimer(walletId);
         await ctx.editMessageText(
-          '🔒 <b>Session Logged Out</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>Reconnect your wallet to mint.</b>',
+          `${brandHeader('Session Logged Out')}\n\n<b>Reconnect your wallet to mint.</b>`,
           { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
         );
         return;
