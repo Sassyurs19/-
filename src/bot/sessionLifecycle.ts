@@ -10,6 +10,31 @@ import { esc, Lang } from '../i18n';
 import { formatClockInTz } from '../jager/eligibility';
 import { logoutAndWipeSession } from '../wallet/baw';
 
+// ---- Welcome / Ephemeral Screen Cleanup ----
+
+const welcomeMessages = new Map<number, number>();
+
+/** Track the active welcome/help card in a chat so it disappears automatically on next input */
+export function trackWelcomeMsg(chatId: number, messageId: number): void {
+  welcomeMessages.set(chatId, messageId);
+}
+
+/** Stop treating a message as disposable welcome once edited in-place into Status/Wallets */
+export function untrackWelcomeMsg(chatId: number, messageId?: number): void {
+  const tracked = welcomeMessages.get(chatId);
+  if (tracked !== undefined && (messageId === undefined || tracked === messageId)) {
+    welcomeMessages.delete(chatId);
+  }
+}
+
+/** Delete the active welcome/help card in a chat (best-effort) */
+export async function clearWelcomeMsg(api: Api, chatId: number): Promise<void> {
+  const id = welcomeMessages.get(chatId);
+  if (id === undefined) return;
+  welcomeMessages.delete(chatId);
+  await api.deleteMessage(chatId, id).catch(() => {});
+}
+
 // ---- Transient Message Cleanup ----
 
 const transientMessages = new Map<number, number[]>();

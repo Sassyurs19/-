@@ -40,12 +40,12 @@ export function walletActionsKeyboard(
     }
     kb.row();
     kb.text(t('btn_sell', lang), `sell_start:${walletId}`)
-      .text(t('btn_status', lang), `status_wallet:${walletId}`).row();
+      .text(t('btn_status', lang), `status_wallet:${walletId}:w`).row();
     kb.text(t('btn_disconnect', lang), `disconnect:${walletId}`)
       .text(t('btn_back', lang), 'my_wallets');
   } else {
     kb.text(t('btn_reconnect', lang), 'connect_wallet').row();
-    kb.text(t('btn_status', lang), `status_wallet:${walletId}`)
+    kb.text(t('btn_status', lang), `status_wallet:${walletId}:w`)
       .text(t('btn_back', lang), 'my_wallets');
   }
 
@@ -132,16 +132,31 @@ export function statusWalletsKeyboard(
     const short = `${w.address.slice(0, 6)}...${w.address.slice(-4)}`;
     const name = w.label ?? 'Wallet';
     const caption = w.agent_id ? `📊 ${name} · ${w.agent_id}` : `📊 ${name} · ${short}`;
-    kb.text(caption, `status_wallet:${w.id}`).row();
+    kb.text(caption, `status_wallet:${w.id}:s`).row();
   }
   kb.text(t('btn_back', lang), 'main_menu');
   return kb;
 }
 
-export function statusDetailKeyboard(walletId: number, lang: Lang, fromMain = false): InlineKeyboard {
+export type StatusOrigin = 'm' | 's' | 'w';
+
+export function statusDetailKeyboard(
+  walletId: number,
+  lang: Lang,
+  origin: StatusOrigin | boolean = 'w'
+): InlineKeyboard {
+  const resolved: StatusOrigin =
+    origin === true ? 'm' : origin === false ? 'w' : origin;
+  const backTarget =
+    resolved === 'm'
+      ? 'main_menu'
+      : resolved === 's'
+        ? 'status_menu'
+        : `wallet_select:${walletId}`;
+
   return new InlineKeyboard()
-    .text(t('btn_refresh', lang), `status_wallet:${walletId}`)
-    .text(t('btn_back', lang), fromMain ? 'main_menu' : `wallet_select:${walletId}`);
+    .text(t('btn_refresh', lang), `status_wallet:${walletId}:${resolved}`)
+    .text(t('btn_back', lang), backTarget);
 }
 
 export function backToMainKeyboard(lang: Lang): InlineKeyboard {

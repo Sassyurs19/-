@@ -14,10 +14,20 @@ import { registerAdminHandlers } from './admin/admin';
 import { getDb } from './db/schema';
 import { config } from './config';
 import { logger } from './core/logger';
+import { sweepSessionsDir } from './core/crypto';
+import { trackWelcomeMsg } from './bot/sessionLifecycle';
+import { mainMenuKeyboard } from './bot/keyboards';
+import { t } from './i18n';
 
-// Ensure required directories exist
+// Ensure required directories exist with restrictive permissions
 for (const dir of [path.dirname(config.dbPath), config.sessionsDir]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+}
+
+// Startup security sweep: re-encrypt crash-leftover plaintext session files & wipe stale temp dirs
+const sweptCount = sweepSessionsDir(config.sessionsDir);
+if (sweptCount > 0) {
+  logger.warn('Startup security sweep secured leftover session files', { sweptCount });
 }
 
 // Initialize DB
@@ -47,6 +57,20 @@ registerMintHandlers(bot);
 registerSellHandlers(bot);
 registerAdminHandlers(bot);
 
+// Clean fallback routings for unexpected text input and stale/unknown inline buttons
+bot.on('callback_query:data', async (ctx) => {
+  await ctx.answerCallbackQuery({ text: 'Session button expired — send /start to refresh.' }).catch(() => {});
+});
+
+bot.on('message:text', async (ctx) => {
+  const lang = ctx.session.lang;
+  const sent = await ctx.reply(t('welcome', lang), {
+    parse_mode: 'HTML',
+    reply_markup: mainMenuKeyboard(lang),
+  });
+  trackWelcomeMsg(ctx.chat.id, sent.message_id);
+});
+
 // Global error handler
 bot.catch((err) => {
   const ctx = err.ctx;
@@ -64,18 +88,28 @@ bot.catch((err) => {
   ctx.reply('⚠️ An unexpected error occurred. Please try again.').catch(() => {});
 });
 
-// Lightweight HTTP server for Render web service health checks (healthCheckPath: /)
+// Lightweight HTTP server for Render web service health checks (hardened with headers & timeouts)
 let healthServer: http.Server | null = null;
 if (config.port > 0) {
   healthServer = http.createServer((req, res) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405);
+      res.end();
+      return;
+    }
     if (req.url === '/' || req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, service: 'jagent-telegram-bot' }));
+      res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ ok: true, service: 'jagent-telegram-bot' }));
     } else {
       res.writeHead(404);
       res.end();
     }
   });
+  healthServer.headersTimeout = 10_000;
+  healthServer.requestTimeout = 10_000;
   healthServer.listen(config.port, '0.0.0.0', () => {
     logger.info('Healthcheck HTTP server listening', { port: config.port });
   });

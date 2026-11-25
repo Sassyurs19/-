@@ -202,7 +202,7 @@ function getBawEntryPath(): string {
 
 function ensureNoKeytarHook(): string {
   if (!fs.existsSync(config.sessionsDir)) {
-    fs.mkdirSync(config.sessionsDir, { recursive: true });
+    fs.mkdirSync(config.sessionsDir, { recursive: true, mode: 0o700 });
   }
   const hookPath = path.join(config.sessionsDir, '.baw_no_keytar.mjs');
   const hookSource = `import { registerHooks } from 'node:module';
@@ -220,7 +220,7 @@ try {
 }
 `;
   if (!fs.existsSync(hookPath) || fs.readFileSync(hookPath, 'utf8') !== hookSource) {
-    fs.writeFileSync(hookPath, hookSource, 'utf8');
+    fs.writeFileSync(hookPath, hookSource, { encoding: 'utf8', mode: 0o600 });
   }
   return hookPath;
 }
@@ -246,15 +246,60 @@ export function getSessionDir(telegramId: number, addressOrTag: string): string 
   return path.join(config.sessionsDir, `${telegramId}_${clean}`);
 }
 
+const ALLOWED_CHILD_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'SystemRoot',
+  'ComSpec',
+  'PATHEXT',
+  'NODE_ENV',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'TZ',
+  'LANG',
+];
+
+/** Build a least-privilege env so BOT_TOKEN / ENCRYPTION_KEY / ADMIN_ID never enter baw CLI subprocesses */
+export function buildSanitizedBawEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ALLOWED_CHILD_ENV_KEYS) {
+    const val = process.env[key];
+    if (val !== undefined) env[key] = val;
+  }
+  return { ...env, ...extra };
+}
+
+/** Ensure sessionDir stays strictly inside config.sessionsDir to prevent path traversal */
+export function assertSafeSessionPath(targetDir: string): string {
+  const root = path.resolve(config.sessionsDir);
+  const resolved = path.resolve(targetDir);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new WalletError('Invalid session directory path');
+  }
+  return resolved;
+}
+
 /** Safely move temp session dir into final wallet session dir under lock */
 export async function promoteSessionDir(fromDir: string, toDir: string): Promise<void> {
-  if (path.resolve(fromDir) === path.resolve(toDir)) return;
-  await withDirLock(fromDir, async () => {
-    await withDirLock(toDir, async () => {
-      if (fs.existsSync(toDir)) {
-        wipeDir(toDir);
+  const safeFrom = assertSafeSessionPath(fromDir);
+  const safeTo = assertSafeSessionPath(toDir);
+  if (safeFrom === safeTo) return;
+  await withDirLock(safeFrom, async () => {
+    await withDirLock(safeTo, async () => {
+      if (fs.existsSync(safeTo)) {
+        wipeDir(safeTo);
       }
-      fs.renameSync(fromDir, toDir);
+      fs.renameSync(safeFrom, safeTo);
     });
   });
 }
@@ -278,17 +323,20 @@ export async function runBaw<T>(
 ): Promise<BawResult<T>> {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const execCore = async (): Promise<BawResult<T>> => {
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const safeSessionDir = sessionDir ? assertSafeSessionPath(sessionDir) : undefined;
+    const extraEnv: Record<string, string> = {};
 
-    if (sessionDir) {
-      if (!fs.existsSync(sessionDir)) {
-        fs.mkdirSync(sessionDir, { recursive: true });
+    if (safeSessionDir) {
+      if (!fs.existsSync(safeSessionDir)) {
+        fs.mkdirSync(safeSessionDir, { recursive: true, mode: 0o700 });
       } else {
-        decryptDir(sessionDir);
+        decryptDir(safeSessionDir);
       }
-      env.BINANCE_BAW_DIR = sessionDir;
-      env.BINANCE_INSTANCE_ID = deriveInstanceId(sessionDir);
+      extraEnv.BINANCE_BAW_DIR = safeSessionDir;
+      extraEnv.BINANCE_INSTANCE_ID = deriveInstanceId(safeSessionDir);
     }
+
+    const env = buildSanitizedBawEnv(extraEnv);
 
     const hookPath = ensureNoKeytarHook();
     const bawEntry = getBawEntryPath();
@@ -581,14 +629,16 @@ export async function bawCliCheck(requiredVersion: string): Promise<BawResult<{ 
 
 /** Convenience logout + wipe for a session dir */
 export async function logoutAndWipeSession(sessionDir: string): Promise<void> {
-  if (!sessionDir || !fs.existsSync(sessionDir)) return;
+  if (!sessionDir) return;
+  const safeDir = assertSafeSessionPath(sessionDir);
+  if (!fs.existsSync(safeDir)) return;
   try {
-    await bawSignout(sessionDir);
+    await bawSignout(safeDir);
   } catch (err) {
     logger.warn('baw signout error during cleanup (non-fatal)', {
       err: err instanceof Error ? err.message : String(err),
     });
   } finally {
-    wipeDir(sessionDir);
+    wipeDir(safeDir);
   }
 }

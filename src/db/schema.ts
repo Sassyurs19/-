@@ -10,7 +10,7 @@ let _db: Database.Database | null = null;
 export function getDb(): Database.Database {
   if (_db) return _db;
   const dir = path.dirname(config.dbPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   _db = new Database(config.dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');

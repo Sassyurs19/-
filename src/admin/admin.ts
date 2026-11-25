@@ -24,10 +24,13 @@ function formatAdminHome(lang: 'en' | 'te'): string {
   );
 }
 
-/** Extract clean referral code (e.g. from https://jager.live/?ref=sassy19.ai -> sassy19.ai) */
+const VALID_REF_PATTERN = /^[A-Za-z0-9_.-]{2,64}$/;
+const VALID_EVM_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+/** Extract & strictly validate referral code (e.g. from https://jager.live/?ref=sassy19.ai -> sassy19.ai) */
 export function parseReferralInput(raw: string): string | null {
   const trimmed = raw.trim();
-  if (!trimmed) return null;
+  if (!trimmed || trimmed.length > 256) return null;
   if (/^(none|clear|off)$/i.test(trimmed)) return '';
 
   // URL form: https://jager.live/?ref=alice.ai
@@ -35,15 +38,18 @@ export function parseReferralInput(raw: string): string | null {
     if (/^https?:\/\//i.test(trimmed)) {
       const u = new URL(trimmed);
       const refParam = u.searchParams.get('ref')?.trim();
-      if (refParam) return refParam;
+      if (refParam && (VALID_EVM_PATTERN.test(refParam) || VALID_REF_PATTERN.test(refParam))) {
+        return refParam;
+      }
+      return null;
     }
   } catch {
-    // ignore URL parse error
+    return null;
   }
 
   // .ai handle, alphanumeric ref, or EVM address
-  if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return trimmed;
-  if (/^[A-Za-z0-9_.-]{2,64}$/.test(trimmed)) return trimmed;
+  if (VALID_EVM_PATTERN.test(trimmed)) return trimmed;
+  if (VALID_REF_PATTERN.test(trimmed)) return trimmed;
   return null;
 }
 
@@ -52,6 +58,7 @@ export function registerAdminHandlers(bot: Bot<JagentContext>): void {
   bot.command('admin', async (ctx) => {
     const lang = ctx.session.lang;
     if (ctx.from?.id !== config.adminId) {
+      logger.warn('Unauthorized /admin command attempt', { userId: ctx.from?.id });
       await ctx.reply(t('admin_not_authorized', lang), { parse_mode: 'HTML' });
       return;
     }
@@ -60,15 +67,6 @@ export function registerAdminHandlers(bot: Bot<JagentContext>): void {
       parse_mode: 'HTML',
       reply_markup: adminKeyboard(lang),
     });
-  });
-
-  // /cancel command clears pending admin input
-  bot.command('cancel', async (ctx) => {
-    if (ctx.session.adminAwait) {
-      ctx.session.adminAwait = undefined;
-      await clearTransientMsgs(bot.api, ctx.chat.id);
-      await ctx.reply('✕ Cancelled.');
-    }
   });
 
   // Admin panel callback

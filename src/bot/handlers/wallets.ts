@@ -8,6 +8,7 @@ import { esc, t } from '../../i18n';
 import {
   backToMainKeyboard,
   statusDetailKeyboard,
+  StatusOrigin,
   statusWalletsKeyboard,
   walletActionsKeyboard,
   walletListKeyboard,
@@ -35,10 +36,15 @@ import {
   ensureSessionTimer,
   formatRemainingWindow,
   getSessionExpiryMs,
+  untrackWelcomeMsg,
 } from '../sessionLifecycle';
 import { logger } from '../../core/logger';
 import { config } from '../../config';
-import { checkUserCooldown } from '../../core/rateLimit';
+import {
+  checkUserCooldown,
+  releaseWalletOp,
+  tryAcquireWalletOp,
+} from '../../core/rateLimit';
 
 async function isWalletSessionConnected(sessionDir: string): Promise<boolean> {
   if (!sessionDir || !fs.existsSync(sessionDir)) return false;
@@ -197,6 +203,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
   // My wallets list
   bot.callbackQuery('my_wallets', async (ctx) => {
     await ctx.answerCallbackQuery();
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
     const lang = ctx.session.lang;
     const wallets = getUserWallets(ctx.from!.id);
 
@@ -224,6 +231,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
   // Select a specific wallet
   bot.callbackQuery(/^wallet_select:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
     const walletId = parseInt(ctx.match[1], 10);
     const lang = ctx.session.lang;
     const wallet = getWallet(walletId);
@@ -259,20 +267,26 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
       await ctx.answerCallbackQuery({ text: 'Please wait a moment...' });
       return;
     }
-    await ctx.answerCallbackQuery('Refreshing checks...');
     const walletId = parseInt(ctx.match[1], 10);
-    const chatId = ctx.chat!.id;
-    const wallet = getWallet(walletId);
-    if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
-      await ctx.reply('❌ <b>Wallet not found.</b>', { parse_mode: 'HTML' });
+    if (!tryAcquireWalletOp(walletId)) {
+      await ctx.answerCallbackQuery({ text: 'Wallet action in progress...' });
       return;
     }
-
-    await ctx.editMessageText('🔍 <b>Refreshing eligibility checks...</b>', {
-      parse_mode: 'HTML',
-    }).catch(() => {});
+    await ctx.answerCallbackQuery('Refreshing checks...');
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
 
     try {
+      const chatId = ctx.chat!.id;
+      const wallet = getWallet(walletId);
+      if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
+        await editOrReplyHtml(ctx, '❌ <b>Wallet not found.</b>', backToMainKeyboard(lang));
+        return;
+      }
+
+      await ctx.editMessageText('🔍 <b>Refreshing eligibility checks...</b>', {
+        parse_mode: 'HTML',
+      }).catch(() => {});
+
       const eligResult = await runEligibilityChecks(wallet.address, wallet.session_dir);
       const usdtNeeded = calcUsdtNeeded(eligResult.priceUsdtPerShare, eligResult.sharesPerMint);
 
@@ -351,19 +365,25 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
         t('error_generic', lang, err instanceof Error ? err.message : String(err)),
         walletActionsKeyboard(walletId, lang, false)
       );
+    } finally {
+      releaseWalletOp(walletId);
     }
   });
 
   // Disconnect / manual logout
   bot.callbackQuery(/^disconnect:(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
     const walletId = parseInt(ctx.match[1], 10);
     const lang = ctx.session.lang;
     const wallet = getWallet(walletId);
     if (!wallet || wallet.telegram_id !== ctx.from!.id) {
-      await ctx.reply('❌ <b>Wallet not found.</b>', { parse_mode: 'HTML' });
+      await editOrReplyHtml(ctx, '❌ <b>Wallet not found.</b>', backToMainKeyboard(lang));
       return;
     }
+
+    if (ctx.session.pendingMint?.walletId === walletId) ctx.session.pendingMint = undefined;
+    if (ctx.session.pendingSell?.walletId === walletId) ctx.session.pendingSell = undefined;
 
     clearSessionTimer(walletId);
     await logoutAndWipeSession(wallet.session_dir);
@@ -381,6 +401,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
   // Status menu
   bot.callbackQuery('status_menu', async (ctx) => {
     await ctx.answerCallbackQuery();
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
     const lang = ctx.session.lang;
     const wallets = getUserWallets(ctx.from!.id);
 
@@ -394,7 +415,7 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
         parse_mode: 'HTML',
       }).catch(() => {});
       const report = await formatWalletStatusReport(wallets[0].id);
-      await editOrReplyHtml(ctx, report, statusDetailKeyboard(wallets[0].id, lang, true));
+      await editOrReplyHtml(ctx, report, statusDetailKeyboard(wallets[0].id, lang, 'm'));
       return;
     }
 
@@ -416,22 +437,24 @@ export function registerWalletHandlers(bot: Bot<JagentContext>): void {
     );
   });
 
-  // Per-wallet live status + Refresh
-  bot.callbackQuery(/^status_wallet:(\d+)$/, async (ctx) => {
+  // Per-wallet live status + Refresh (preserves navigation origin: m=main, s=status list, w=wallet actions)
+  bot.callbackQuery(/^status_wallet:(\d+)(?::(m|s|w))?$/, async (ctx) => {
     if (!checkUserCooldown(ctx.from!.id, 'status_wallet', 1500)) {
       await ctx.answerCallbackQuery({ text: 'Refreshing...' });
       return;
     }
     await ctx.answerCallbackQuery('Fetching live data...');
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
     const lang = ctx.session.lang;
     const walletId = parseInt(ctx.match[1], 10);
+    const origin = (ctx.match[2] as StatusOrigin | undefined) ?? 'w';
     const wallet = getWallet(walletId);
     if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
-      await ctx.reply('❌ <b>Wallet not found.</b>', { parse_mode: 'HTML' });
+      await editOrReplyHtml(ctx, '❌ <b>Wallet not found.</b>', backToMainKeyboard(lang));
       return;
     }
 
     const report = await formatWalletStatusReport(walletId);
-    await editOrReplyHtml(ctx, report, statusDetailKeyboard(walletId, lang, false));
+    await editOrReplyHtml(ctx, report, statusDetailKeyboard(walletId, lang, origin));
   });
 }

@@ -5,6 +5,7 @@ import { Bot } from 'grammy';
 import { JagentContext } from '../middleware';
 import { esc, t } from '../../i18n';
 import {
+  backToMainKeyboard,
   sellConfirmKeyboard,
   sellPercentKeyboard,
   sellTokenKeyboard,
@@ -20,28 +21,44 @@ import { executeSell, getSellQuote } from '../../jager/sell';
 import { claimWalletRewards } from '../../jager/rewards';
 import { bawBalance, bawStatus, logoutAndWipeSession } from '../../wallet/baw';
 import { getAgentStatus } from '../../jager/api';
-import { clearSessionTimer, renderProgressBar } from '../sessionLifecycle';
+import { clearSessionTimer, renderProgressBar, untrackWelcomeMsg } from '../sessionLifecycle';
 import { config } from '../../config';
 import { logger } from '../../core/logger';
-import { checkUserCooldown } from '../../core/rateLimit';
+import {
+  checkUserCooldown,
+  releaseWalletOp,
+  tryAcquireWalletOp,
+} from '../../core/rateLimit';
+
+async function isSellSessionConnected(sessionDir: string): Promise<boolean> {
+  if (!sessionDir || !fs.existsSync(sessionDir)) return false;
+  return bawStatus(sessionDir)
+    .then((r) => r.success && r.data.status === 'CONNECTED')
+    .catch(() => false);
+}
 
 export function registerSellHandlers(bot: Bot<JagentContext>): void {
   // Start sell flow
   bot.callbackQuery(/^sell_start:(\d+)$/, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const walletId = parseInt(ctx.match[1], 10);
     const lang = ctx.session.lang;
+    if (!checkUserCooldown(ctx.from!.id, 'sell_start', 2000)) {
+      await ctx.answerCallbackQuery({ text: 'Please wait a moment...' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    untrackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message?.message_id);
+
+    const walletId = parseInt(ctx.match[1], 10);
     const wallet = getWallet(walletId);
     if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
-      await ctx.reply('❌ Wallet not found.');
+      await ctx.editMessageText('❌ <b>Wallet not found.</b>', {
+        parse_mode: 'HTML',
+        reply_markup: backToMainKeyboard(lang),
+      }).catch(() => {});
       return;
     }
 
-    const connected =
-      fs.existsSync(wallet.session_dir) &&
-      (await bawStatus(wallet.session_dir)
-        .then((r) => r.success && r.data.status === 'CONNECTED')
-        .catch(() => false));
+    const connected = await isSellSessionConnected(wallet.session_dir);
     if (!connected) {
       clearSessionTimer(walletId);
       await ctx.editMessageText(
@@ -98,9 +115,22 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
     const walletId = parseInt(ctx.match[1], 10);
     const pct = parseInt(ctx.match[2], 10);
     const lang = ctx.session.lang;
+    const wallet = getWallet(walletId);
+    if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
+      await ctx.editMessageText('❌ <b>Wallet not found.</b>', {
+        parse_mode: 'HTML',
+        reply_markup: backToMainKeyboard(lang),
+      }).catch(() => {});
+      return;
+    }
+
     const pending = ctx.session.pendingSell;
     if (!pending || pending.walletId !== walletId) {
-      await ctx.reply('❌ No pending sell. Start over.');
+      const connected = await isSellSessionConnected(wallet.session_dir);
+      await ctx.editMessageText('❌ <b>Sell session expired. Please start again.</b>', {
+        parse_mode: 'HTML',
+        reply_markup: walletActionsKeyboard(walletId, lang, connected, { canMint: wallet.last_check_ok === 1 }),
+      }).catch(() => {});
       return;
     }
 
@@ -124,53 +154,79 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
       await ctx.answerCallbackQuery({ text: 'Please wait a moment...' });
       return;
     }
-    await ctx.answerCallbackQuery();
-
     const walletId = parseInt(ctx.match[1], 10);
     const toToken = ctx.match[2] as 'BNB' | 'USDT';
-    const wallet = getWallet(walletId);
-    if (!wallet || wallet.telegram_id !== ctx.from!.id) {
-      await ctx.reply('❌ Wallet not found.');
+    if (!tryAcquireWalletOp(walletId)) {
+      await ctx.answerCallbackQuery({ text: 'Wallet action in progress...' });
       return;
     }
-
-    const pending = ctx.session.pendingSell;
-    if (!pending || pending.walletId !== walletId) {
-      await ctx.reply('❌ No pending sell. Start over.');
-      return;
-    }
-
-    pending.toToken = toToken;
-    await ctx.editMessageText(t('sell_fetching_quote', lang), { parse_mode: 'HTML' });
+    await ctx.answerCallbackQuery();
 
     try {
-      const quote = await getSellQuote(wallet.session_dir, pending.amount, toToken);
-      pending.quote = quote;
-
-      const quoteCard = t(
-        'sell_quote_card',
-        lang,
-        quote.jagentAmount,
-        quote.receiveAmount,
-        quote.receiveToken,
-        quote.sellTaxPct,
-        quote.priceImpact,
-        quote.gasFee
-      );
-
-      await ctx.editMessageText(`${quoteCard}\n\n${t('sell_confirm_prompt', lang)}`, {
-        parse_mode: 'HTML',
-        reply_markup: sellConfirmKeyboard(walletId, lang),
-      });
-    } catch (err) {
-      logger.error('Sell quote error', { err });
-      await ctx.editMessageText(
-        t('sell_failed', lang, err instanceof Error ? err.message : String(err)),
-        {
+      const wallet = getWallet(walletId);
+      if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
+        await ctx.editMessageText('❌ <b>Wallet not found.</b>', {
           parse_mode: 'HTML',
-          reply_markup: walletActionsKeyboard(walletId, lang, true),
-        }
-      );
+          reply_markup: backToMainKeyboard(lang),
+        }).catch(() => {});
+        return;
+      }
+
+      const pending = ctx.session.pendingSell;
+      if (!pending || pending.walletId !== walletId) {
+        const connected = await isSellSessionConnected(wallet.session_dir);
+        await ctx.editMessageText('❌ <b>Sell session expired. Please start again.</b>', {
+          parse_mode: 'HTML',
+          reply_markup: walletActionsKeyboard(walletId, lang, connected, { canMint: wallet.last_check_ok === 1 }),
+        }).catch(() => {});
+        return;
+      }
+
+      if (!(await isSellSessionConnected(wallet.session_dir))) {
+        ctx.session.pendingSell = undefined;
+        clearSessionTimer(walletId);
+        await ctx.editMessageText(
+          '🔒 <b>Session Logged Out</b>\n─────────────────\nTap <b>Reconnect</b> to connect your wallet again.',
+          { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
+        );
+        return;
+      }
+
+      pending.toToken = toToken;
+      await ctx.editMessageText(t('sell_fetching_quote', lang), { parse_mode: 'HTML' });
+
+      try {
+        const quote = await getSellQuote(wallet.session_dir, pending.amount, toToken);
+        pending.quote = quote;
+
+        const quoteCard = t(
+          'sell_quote_card',
+          lang,
+          quote.jagentAmount,
+          quote.receiveAmount,
+          quote.receiveToken,
+          quote.sellTaxPct,
+          quote.priceImpact,
+          quote.gasFee
+        );
+
+        await ctx.editMessageText(`${quoteCard}\n\n${t('sell_confirm_prompt', lang)}`, {
+          parse_mode: 'HTML',
+          reply_markup: sellConfirmKeyboard(walletId, lang),
+        });
+      } catch (err) {
+        logger.error('Sell quote error', { err });
+        const connected = await isSellSessionConnected(wallet.session_dir);
+        await ctx.editMessageText(
+          t('sell_failed', lang, err instanceof Error ? err.message : String(err)),
+          {
+            parse_mode: 'HTML',
+            reply_markup: walletActionsKeyboard(walletId, lang, connected),
+          }
+        );
+      }
+    } finally {
+      releaseWalletOp(walletId);
     }
   });
 
@@ -181,120 +237,149 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
       await ctx.answerCallbackQuery({ text: 'Swap already submitted...' });
       return;
     }
+    const walletId = parseInt(ctx.match[1], 10);
+    if (!tryAcquireWalletOp(walletId)) {
+      await ctx.answerCallbackQuery({ text: 'Wallet action in progress...' });
+      return;
+    }
     await ctx.answerCallbackQuery();
 
-    const walletId = parseInt(ctx.match[1], 10);
-    const wallet = getWallet(walletId);
-    if (!wallet || wallet.telegram_id !== ctx.from!.id) {
-      await ctx.reply('❌ Wallet not found.');
-      return;
-    }
-
-    const pending = ctx.session.pendingSell;
-    if (!pending || pending.walletId !== walletId) {
-      await ctx.reply('❌ No pending sell. Start over.');
-      return;
-    }
-
-    ctx.session.pendingSell = undefined;
-
-    await ctx.editMessageText(
-      `<b>✦ ＪＡＧΞＲ · Selling JAGENT</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>${renderProgressBar(40)}\n• <b>Broadcasting swap &amp; awaiting confirmation...</b></blockquote>`,
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
-
-    const sellId = insertSell(walletId, {
-      jagent_amount: pending.amount,
-      receive_token: pending.toToken,
-      receive_amount: pending.quote?.receiveAmount ?? null,
-      gas_used: null,
-      tx_hash: null,
-      status: 'pending',
-      error_reason: null,
-    });
-
     try {
-      const result = await executeSell(wallet.session_dir, pending.amount, pending.toToken);
-
-      if (result.status === 'PENDING') {
-        updateSellStatus(sellId, 'pending');
-        await ctx.editMessageText(t('sell_pending', lang, result.orderId), {
+      const wallet = getWallet(walletId);
+      if (!wallet || wallet.telegram_id !== ctx.from!.id || !wallet.is_active) {
+        ctx.session.pendingSell = undefined;
+        await ctx.editMessageText('❌ <b>Wallet not found.</b>', {
           parse_mode: 'HTML',
-          reply_markup: walletActionsKeyboard(walletId, lang, true),
-        });
+          reply_markup: backToMainKeyboard(lang),
+        }).catch(() => {});
         return;
       }
 
-      clearSessionTimer(walletId);
-      await logoutAndWipeSession(wallet.session_dir);
+      const pending = ctx.session.pendingSell;
+      if (!pending || pending.walletId !== walletId) {
+        const connected = await isSellSessionConnected(wallet.session_dir);
+        await ctx.editMessageText('❌ <b>Sell session expired. Please start again.</b>', {
+          parse_mode: 'HTML',
+          reply_markup: walletActionsKeyboard(walletId, lang, connected, { canMint: wallet.last_check_ok === 1 }),
+        }).catch(() => {});
+        return;
+      }
 
-      if (result.status === 'FAILED') {
+      if (!(await isSellSessionConnected(wallet.session_dir))) {
+        ctx.session.pendingSell = undefined;
+        clearSessionTimer(walletId);
+        await ctx.editMessageText(
+          '🔒 <b>Session Logged Out</b>\n─────────────────\nTap <b>Reconnect</b> to connect your wallet again.',
+          { parse_mode: 'HTML', reply_markup: walletActionsKeyboard(walletId, lang, false) }
+        );
+        return;
+      }
+
+      ctx.session.pendingSell = undefined;
+
+      await ctx.editMessageText(
+        `<b>✦ ＪＡＧΞＲ · Selling JAGENT</b>\n━━━━━━━━━━━━━━━━━━━━\n<blockquote>${renderProgressBar(40)}\n• <b>Broadcasting swap &amp; awaiting confirmation...</b></blockquote>`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+
+      const sellId = insertSell(walletId, {
+        jagent_amount: pending.amount,
+        receive_token: pending.toToken,
+        receive_amount: pending.quote?.receiveAmount ?? null,
+        gas_used: null,
+        tx_hash: null,
+        status: 'pending',
+        error_reason: null,
+      });
+
+      try {
+        const result = await executeSell(wallet.session_dir, pending.amount, pending.toToken);
+
+        if (result.status === 'PENDING') {
+          updateSellStatus(sellId, 'pending');
+          await ctx.editMessageText(t('sell_pending', lang, result.orderId), {
+            parse_mode: 'HTML',
+            reply_markup: walletActionsKeyboard(walletId, lang, true),
+          });
+          return;
+        }
+
+        clearSessionTimer(walletId);
+        await logoutAndWipeSession(wallet.session_dir);
+
+        if (result.status === 'FAILED') {
+          updateSellStatus(
+            sellId,
+            'failed',
+            result.txHash || undefined,
+            result.errorReason ?? 'Order failed',
+            undefined,
+            result.gasUsedBnb
+          );
+          await ctx.editMessageText(
+            `${t('sell_failed', lang, result.errorReason ?? 'Swap failed on-chain')}\n\n⛽ Gas lost: <code>${esc(result.gasUsedBnb)} BNB</code>\n\n${t('session_logged_out_done', lang)}`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: walletActionsKeyboard(walletId, lang, false),
+            }
+          );
+          return;
+        }
+
         updateSellStatus(
           sellId,
-          'failed',
+          'success',
           result.txHash || undefined,
-          result.errorReason ?? 'Order failed',
           undefined,
+          result.receivedAmount || pending.quote?.receiveAmount,
           result.gasUsedBnb
         );
+
+        let rewardLine = '';
+        const reward = await claimWalletRewards(wallet.address, { onlyIfPending: true });
+        if (reward.claimed) {
+          insertRewardClaim(walletId, {
+            amount_usdt: reward.paidUsdt,
+            tx_hash: reward.txHash ?? null,
+            status: 'success',
+            source: 'auto_sell',
+            reason: null,
+          });
+          rewardLine = `\n🎁 <b>Pending Reward Claimed:</b> <code>${esc(reward.paidUsdt)} USDT</code>${reward.txHash ? ` (<a href="https://bscscan.com/tx/${esc(reward.txHash)}">TX</a>)` : ''}`;
+        }
+
+        const summary = t(
+          'sell_success',
+          lang,
+          result.txHash || result.orderId,
+          result.status,
+          result.receivedAmount || pending.quote?.receiveAmount || '?',
+          pending.toToken,
+          result.refundNote
+        );
+
         await ctx.editMessageText(
-          `${t('sell_failed', lang, result.errorReason ?? 'Swap failed on-chain')}\n\n⛽ Gas lost: <code>${esc(result.gasUsedBnb)} BNB</code>\n\n${t('session_logged_out_done', lang)}`,
+          `${renderProgressBar(100)}\n\n${summary}${rewardLine}\n\n${t('session_logged_out_done', lang)}`,
           {
             parse_mode: 'HTML',
             reply_markup: walletActionsKeyboard(walletId, lang, false),
           }
         );
-        return;
-      }
+      } catch (err) {
+        logger.error('Sell execution error', { err });
+        const reason = err instanceof Error ? err.message : String(err);
+        updateSellStatus(sellId, 'failed', undefined, reason);
 
-      updateSellStatus(
-        sellId,
-        'success',
-        result.txHash || undefined,
-        undefined,
-        result.receivedAmount || pending.quote?.receiveAmount,
-        result.gasUsedBnb
-      );
-
-      let rewardLine = '';
-      const reward = await claimWalletRewards(wallet.address, { onlyIfPending: true });
-      if (reward.claimed) {
-        insertRewardClaim(walletId, {
-          amount_usdt: reward.paidUsdt,
-          tx_hash: reward.txHash ?? null,
-          status: 'success',
-          source: 'auto_sell',
-          reason: null,
-        });
-        rewardLine = `\n🎁 <b>Pending Reward Claimed:</b> <code>${esc(reward.paidUsdt)} USDT</code>${reward.txHash ? ` (<a href="https://bscscan.com/tx/${esc(reward.txHash)}">TX</a>)` : ''}`;
-      }
-
-      const summary = t(
-        'sell_success',
-        lang,
-        result.txHash || result.orderId,
-        result.status,
-        result.receivedAmount || pending.quote?.receiveAmount || '?',
-        pending.toToken,
-        result.refundNote
-      );
-
-      await ctx.editMessageText(
-        `${renderProgressBar(100)}\n\n${summary}${rewardLine}\n\n${t('session_logged_out_done', lang)}`,
-        {
+        const stillConnected = await isSellSessionConnected(wallet.session_dir);
+        await ctx.editMessageText(t('sell_failed', lang, reason), {
           parse_mode: 'HTML',
-          reply_markup: walletActionsKeyboard(walletId, lang, false),
-        }
-      );
-    } catch (err) {
-      logger.error('Sell execution error', { err });
-      const reason = err instanceof Error ? err.message : String(err);
-      updateSellStatus(sellId, 'failed', undefined, reason);
-
-      await ctx.editMessageText(t('sell_failed', lang, reason), {
-        parse_mode: 'HTML',
-        reply_markup: walletActionsKeyboard(walletId, lang, true),
-      });
+          reply_markup: walletActionsKeyboard(walletId, lang, stillConnected, {
+            canMint: wallet.last_check_ok === 1,
+          }),
+        });
+      }
+    } finally {
+      releaseWalletOp(walletId);
     }
   });
 
@@ -303,9 +388,13 @@ export function registerSellHandlers(bot: Bot<JagentContext>): void {
     await ctx.answerCallbackQuery();
     const walletId = parseInt(ctx.match[1], 10);
     ctx.session.pendingSell = undefined;
+    const wallet = getWallet(walletId);
+    const connected = wallet ? await isSellSessionConnected(wallet.session_dir) : false;
     await ctx.editMessageText(t('sell_aborted', ctx.session.lang), {
       parse_mode: 'HTML',
-      reply_markup: walletActionsKeyboard(walletId, ctx.session.lang, true),
+      reply_markup: walletActionsKeyboard(walletId, ctx.session.lang, connected, {
+        canMint: wallet?.last_check_ok === 1,
+      }),
     });
   });
 }

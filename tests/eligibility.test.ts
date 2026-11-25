@@ -56,11 +56,16 @@ import { formatRewardReason } from '../src/jager/rewards';
 import {
   clearSessionTimer,
   clearTransientMsgs,
+  clearWelcomeMsg,
   ensureSessionTimer,
   getSessionExpiryMs,
   renderProgressBar,
   trackTransientMsg,
+  trackWelcomeMsg,
+  untrackWelcomeMsg,
 } from '../src/bot/sessionLifecycle';
+import { assertSafeSessionPath, buildSanitizedBawEnv } from '../src/wallet/baw';
+import { releaseWalletOp, tryAcquireWalletOp } from '../src/core/rateLimit';
 
 describe('Eligibility Check Logic (Production Functions)', () => {
   describe('USDT sufficiency & 1.02x cost calculation', () => {
@@ -233,6 +238,58 @@ describe('Progress bar, transient cleanup & 20-min timer lifecycle', () => {
     expect(getSessionExpiryMs(777)).toBe(expires);
     clearSessionTimer(777);
     expect(getSessionExpiryMs(777)).toBeNull();
+  });
+});
+
+describe('Security guards & welcome auto-cleanup', () => {
+  it('blocks malicious referral inputs inside URLs and oversize payloads', () => {
+    expect(parseReferralInput('https://jager.live/?ref=evil<script>')).toBeNull();
+    expect(parseReferralInput('https://jager.live/?ref=alice%20space')).toBeNull();
+    expect(parseReferralInput('a'.repeat(300))).toBeNull();
+    expect(parseReferralInput('https://jager.live/?ref=sassy19.ai')).toBe('sassy19.ai');
+    expect(parseReferralInput('0xD08f132905Cdfedbb0f57E13b61378AC0b5dFbf4')).toBe(
+      '0xD08f132905Cdfedbb0f57E13b61378AC0b5dFbf4'
+    );
+  });
+
+  it('strips secret bot env vars from child baw subprocess env', () => {
+    process.env.BOT_TOKEN = '123456789:SECRET_TOKEN';
+    process.env.ENCRYPTION_KEY = 'f'.repeat(64);
+    process.env.ADMIN_ID = '999999';
+    const childEnv = buildSanitizedBawEnv({ BINANCE_BAW_DIR: '/tmp/test-sessions/u1' });
+    expect(childEnv.BOT_TOKEN).toBeUndefined();
+    expect(childEnv.ENCRYPTION_KEY).toBeUndefined();
+    expect(childEnv.ADMIN_ID).toBeUndefined();
+    expect(childEnv.BINANCE_BAW_DIR).toBe('/tmp/test-sessions/u1');
+  });
+
+  it('rejects session path traversal outside sessionsDir', () => {
+    expect(() => assertSafeSessionPath('/tmp/test-sessions/user1')).not.toThrow();
+    expect(() => assertSafeSessionPath('/tmp/test-sessions/../etc/passwd')).toThrow();
+    expect(() => assertSafeSessionPath('/tmp/other-dir')).toThrow();
+  });
+
+  it('enforces per-wallet operation mutex to block concurrent double submits', () => {
+    expect(tryAcquireWalletOp(901)).toBe(true);
+    expect(tryAcquireWalletOp(901)).toBe(false);
+    releaseWalletOp(901);
+    expect(tryAcquireWalletOp(901)).toBe(true);
+    releaseWalletOp(901);
+  });
+
+  it('deletes starting welcome message on next input unless untracked (edited into Status/Wallets)', async () => {
+    const deleteMessage = jest.fn().mockResolvedValue(true);
+    const fakeApi = { deleteMessage } as unknown as import('grammy').Api;
+
+    trackWelcomeMsg(600, 10);
+    await clearWelcomeMsg(fakeApi, 600);
+    expect(deleteMessage).toHaveBeenCalledWith(600, 10);
+
+    // If transformed in-place into Status/Wallets, untrack preserves the active report
+    trackWelcomeMsg(600, 20);
+    untrackWelcomeMsg(600, 20);
+    await clearWelcomeMsg(fakeApi, 600);
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
   });
 });
 

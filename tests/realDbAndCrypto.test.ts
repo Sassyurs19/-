@@ -55,7 +55,7 @@ import {
   updateSellStatus,
   upsertUser,
 } from '../src/db/repository';
-import { decryptDir, encryptDir, wipeDir } from '../src/core/crypto';
+import { decryptDir, encryptDir, sweepSessionsDir, wipeDir } from '../src/core/crypto';
 import { formatCleanNum } from '../src/bot/handlers/wallets';
 
 afterAll(() => {
@@ -187,5 +187,32 @@ describe('Real SQLite & AES-256-GCM integration', () => {
 
     wipeDir(sessDir);
     expect(fs.existsSync(sessDir)).toBe(false);
+  });
+
+  it('handles .enc in folder names and sweeps crash-leftover plaintext sessions on startup', () => {
+    const sessRoot = path.join(tmpRoot, 'sessions');
+    const walletDir = path.join(sessRoot, '999_wallet.enc_dir');
+    const staleTmpDir = path.join(sessRoot, '999_new_1');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.mkdirSync(staleTmpDir, { recursive: true });
+
+    const leftOverFile = path.join(walletDir, 'session.json');
+    fs.writeFileSync(leftOverFile, JSON.stringify({ secret: 'abc' }));
+    fs.writeFileSync(path.join(sessRoot, '.baw_no_keytar.mjs'), 'export default {};');
+
+    // Backdate stale temp dir beyond 10 minutes
+    const oldTime = new Date(Date.now() - 20 * 60_000);
+    fs.utimesSync(staleTmpDir, oldTime, oldTime);
+
+    const swept = sweepSessionsDir(sessRoot);
+    expect(swept).toBe(2);
+    expect(fs.existsSync(leftOverFile)).toBe(false);
+    expect(fs.existsSync(leftOverFile + '.enc')).toBe(true);
+    expect(fs.existsSync(staleTmpDir)).toBe(false);
+    expect(fs.existsSync(path.join(sessRoot, '.baw_no_keytar.mjs'))).toBe(true);
+
+    decryptDir(walletDir);
+    expect(fs.existsSync(leftOverFile)).toBe(true);
+    wipeDir(walletDir);
   });
 });

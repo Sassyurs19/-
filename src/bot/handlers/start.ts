@@ -5,10 +5,12 @@ import QRCode from 'qrcode';
 import { JagentContext } from '../middleware';
 import { esc, Lang, t } from '../../i18n';
 import {
+  backToMainKeyboard,
   connectCancelKeyboard,
   mainMenuKeyboard,
   walletActionsKeyboard,
 } from '../keyboards';
+import { checkUserCooldown } from '../../core/rateLimit';
 import { config } from '../../config';
 import {
   bawAddress,
@@ -39,9 +41,11 @@ import {
 import {
   clearSessionTimer,
   clearTransientMsgs,
+  clearWelcomeMsg,
   ensureSessionTimer,
   formatRemainingWindow,
   trackTransientMsg,
+  trackWelcomeMsg,
 } from '../sessionLifecycle';
 
 // Track active background verify tasks per user so [Cancel] stops them immediately
@@ -51,47 +55,99 @@ const activeConnectAborts = new Map<
 >();
 
 export function registerStartHandlers(bot: Bot<JagentContext>): void {
-  // /start command
+  // /start command — replaces any previous welcome & clears transient/pending QR state
   bot.command('start', async (ctx) => {
+    ctx.session.pendingMint = undefined;
+    ctx.session.pendingSell = undefined;
+    ctx.session.adminAwait = undefined;
+    if (ctx.from) {
+      const entry = activeConnectAborts.get(ctx.from.id);
+      if (entry) {
+        entry.abort.abort();
+        wipeDir(entry.sessionDir);
+        activeConnectAborts.delete(ctx.from.id);
+      }
+    }
+    await clearTransientMsgs(bot.api, ctx.chat.id);
     const lang = ctx.session.lang;
-    await ctx.reply(t('welcome', lang), {
+    const sent = await ctx.reply(t('welcome', lang), {
       parse_mode: 'HTML',
       reply_markup: mainMenuKeyboard(lang),
     });
+    trackWelcomeMsg(ctx.chat.id, sent.message_id);
   });
 
-  // /help command (moved from button into TG commands)
+  // /help command (disappears cleanly on next user input)
   bot.command('help', async (ctx) => {
-    await ctx.reply(t('help_text', ctx.session.lang), {
+    const lang = ctx.session.lang;
+    const sent = await ctx.reply(t('help_text', lang), {
       parse_mode: 'HTML',
-      reply_markup: mainMenuKeyboard(ctx.session.lang),
+      reply_markup: backToMainKeyboard(lang),
     });
+    trackWelcomeMsg(ctx.chat.id, sent.message_id);
   });
 
-  // /language, /lang, /telugu command (moved from button into TG commands)
+  // /language, /lang, /telugu command
   bot.command(['language', 'lang', 'telugu'], async (ctx) => {
     const newLang: Lang = ctx.session.lang === 'en' ? 'te' : 'en';
     ctx.session.lang = newLang;
     if (ctx.from) setUserLang(ctx.from.id, newLang);
-    await ctx.reply(t('welcome', newLang), {
+    const sent = await ctx.reply(t('welcome', newLang), {
       parse_mode: 'HTML',
       reply_markup: mainMenuKeyboard(newLang),
     });
+    trackWelcomeMsg(ctx.chat.id, sent.message_id);
+  });
+
+  // Global /cancel — aborts pending QR, clears pending mint/sell/admin input, returns to main menu
+  bot.command('cancel', async (ctx) => {
+    const telegramId = ctx.from!.id;
+    const chatId = ctx.chat.id;
+    const lang = ctx.session.lang;
+    ctx.session.pendingMint = undefined;
+    ctx.session.pendingSell = undefined;
+    ctx.session.adminAwait = undefined;
+
+    const entry = activeConnectAborts.get(telegramId);
+    if (entry) {
+      entry.abort.abort();
+      wipeDir(entry.sessionDir);
+      activeConnectAborts.delete(telegramId);
+    }
+    await clearTransientMsgs(bot.api, chatId);
+
+    const sent = await ctx.reply(t('welcome', lang), {
+      parse_mode: 'HTML',
+      reply_markup: mainMenuKeyboard(lang),
+    });
+    trackWelcomeMsg(chatId, sent.message_id);
   });
 
   // Main menu callback
   bot.callbackQuery('main_menu', async (ctx) => {
     await ctx.answerCallbackQuery();
     const lang = ctx.session.lang;
-    await ctx.editMessageText(t('welcome', lang), {
-      parse_mode: 'HTML',
-      reply_markup: mainMenuKeyboard(lang),
-    }).catch(async () => {
-      await ctx.reply(t('welcome', lang), {
+    const chatId = ctx.chat!.id;
+    ctx.session.pendingMint = undefined;
+    ctx.session.pendingSell = undefined;
+    ctx.session.adminAwait = undefined;
+    await clearTransientMsgs(bot.api, chatId);
+
+    try {
+      await ctx.editMessageText(t('welcome', lang), {
         parse_mode: 'HTML',
         reply_markup: mainMenuKeyboard(lang),
       });
-    });
+      if (ctx.callbackQuery.message) {
+        trackWelcomeMsg(chatId, ctx.callbackQuery.message.message_id);
+      }
+    } catch {
+      const sent = await ctx.reply(t('welcome', lang), {
+        parse_mode: 'HTML',
+        reply_markup: mainMenuKeyboard(lang),
+      });
+      trackWelcomeMsg(chatId, sent.message_id);
+    }
   });
 
   // Legacy callback compatibility
@@ -104,50 +160,93 @@ export function registerStartHandlers(bot: Bot<JagentContext>): void {
       parse_mode: 'HTML',
       reply_markup: mainMenuKeyboard(newLang),
     });
+    if (ctx.callbackQuery.message) {
+      trackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message.message_id);
+    }
   });
 
   bot.callbackQuery('help', async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText(t('help_text', ctx.session.lang), {
+    const lang = ctx.session.lang;
+    await ctx.editMessageText(t('help_text', lang), {
       parse_mode: 'HTML',
-      reply_markup: mainMenuKeyboard(ctx.session.lang),
+      reply_markup: backToMainKeyboard(lang),
     });
+    if (ctx.callbackQuery.message) {
+      trackWelcomeMsg(ctx.chat!.id, ctx.callbackQuery.message.message_id);
+    }
   });
 
   // Connect new wallet (or reconnect)
   bot.callbackQuery('connect_wallet', async (ctx) => {
-    await ctx.answerCallbackQuery();
     const lang = ctx.session.lang;
     const telegramId = ctx.from!.id;
     const chatId = ctx.chat!.id;
 
-    // Abort any previous pending QR connect and clean old transient messages
+    if (!checkUserCooldown(telegramId, 'connect_wallet', 3000)) {
+      await ctx.answerCallbackQuery({ text: 'Please wait a moment...' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+
+    ctx.session.pendingMint = undefined;
+    ctx.session.pendingSell = undefined;
+    ctx.session.adminAwait = undefined;
+
+    // Abort any previous pending QR connect and clean old welcome + transient messages immediately
     const existing = activeConnectAborts.get(telegramId);
     if (existing) {
       existing.abort.abort();
       wipeDir(existing.sessionDir);
       activeConnectAborts.delete(telegramId);
     }
+    await clearWelcomeMsg(bot.api, chatId);
+    await ctx.deleteMessage().catch(() => {});
     await clearTransientMsgs(bot.api, chatId);
 
     const connMsg = await ctx.reply(t('connecting', lang), { parse_mode: 'HTML' });
     trackTransientMsg(chatId, connMsg.message_id);
 
     const tempDir = getSessionDir(telegramId, `new_${Date.now()}`);
+    const abort = new AbortController();
+    activeConnectAborts.set(telegramId, {
+      qrCodeId: 'pending',
+      sessionDir: tempDir,
+      abort,
+    });
 
     try {
       const signinResult = await bawSignin(tempDir);
+      if (abort.signal.aborted) {
+        wipeDir(tempDir);
+        return;
+      }
+
       if (!signinResult.success) {
+        if (activeConnectAborts.get(telegramId)?.abort === abort) {
+          activeConnectAborts.delete(telegramId);
+        }
         await clearTransientMsgs(bot.api, chatId);
         wipeDir(tempDir);
-        await ctx.reply(`❌ ${esc(signinResult.error.message)}`, { parse_mode: 'HTML' });
+        const failMsg = await ctx.reply(`❌ ${esc(signinResult.error.message)}`, {
+          parse_mode: 'HTML',
+          reply_markup: mainMenuKeyboard(lang),
+        });
+        trackWelcomeMsg(chatId, failMsg.message_id);
         return;
       }
 
       const data = signinResult.data;
       if ('status' in data && data.status === 'ALREADY_CONNECTED') {
+        if (activeConnectAborts.get(telegramId)?.abort === abort) {
+          activeConnectAborts.delete(telegramId);
+        }
         await clearTransientMsgs(bot.api, chatId);
-        await ctx.reply(t('already_connected', lang), { parse_mode: 'HTML' });
+        const msg = await ctx.reply(t('already_connected', lang), {
+          parse_mode: 'HTML',
+          reply_markup: mainMenuKeyboard(lang),
+        });
+        trackWelcomeMsg(chatId, msg.message_id);
         return;
       }
 
@@ -155,7 +254,6 @@ export function registerStartHandlers(bot: Bot<JagentContext>): void {
       const expireAtMs = parseInt(signData.expireAt, 10);
       const expiryStr = formatTimestampInTz(expireAtMs, false);
 
-      const abort = new AbortController();
       activeConnectAborts.set(telegramId, {
         qrCodeId: signData.qrCodeId,
         sessionDir: tempDir,
@@ -167,6 +265,10 @@ export function registerStartHandlers(bot: Bot<JagentContext>): void {
         margin: 2,
         color: { dark: '#000000', light: '#ffffff' },
       });
+      if (abort.signal.aborted) {
+        wipeDir(tempDir);
+        return;
+      }
 
       // Remove "Connecting..." before showing QR
       await clearTransientMsgs(bot.api, chatId);
@@ -192,20 +294,33 @@ export function registerStartHandlers(bot: Bot<JagentContext>): void {
         abort,
       });
     } catch (err) {
+      if (abort.signal.aborted) {
+        wipeDir(tempDir);
+        return;
+      }
+      if (activeConnectAborts.get(telegramId)?.abort === abort) {
+        activeConnectAborts.delete(telegramId);
+      }
       logger.error('Connect wallet init error', { err });
       await clearTransientMsgs(bot.api, chatId);
       wipeDir(tempDir);
-      await ctx.reply(t('error_generic', lang, err instanceof Error ? err.message : String(err)), {
-        parse_mode: 'HTML',
-      });
+      const errMsg = await ctx.reply(
+        t('error_generic', lang, err instanceof Error ? err.message : String(err)),
+        {
+          parse_mode: 'HTML',
+          reply_markup: mainMenuKeyboard(lang),
+        }
+      );
+      trackWelcomeMsg(chatId, errMsg.message_id);
     }
   });
 
-  // Cancel active connect
+  // Cancel active connect -> return cleanly to Main Menu
   bot.callbackQuery('connect_cancel', async (ctx) => {
     await ctx.answerCallbackQuery('Cancelled');
     const telegramId = ctx.from!.id;
     const chatId = ctx.chat!.id;
+    const lang = ctx.session.lang;
     const entry = activeConnectAborts.get(telegramId);
     if (entry) {
       entry.abort.abort();
@@ -213,6 +328,12 @@ export function registerStartHandlers(bot: Bot<JagentContext>): void {
       activeConnectAborts.delete(telegramId);
     }
     await clearTransientMsgs(bot.api, chatId);
+    await clearWelcomeMsg(bot.api, chatId);
+    const sent = await bot.api.sendMessage(chatId, t('welcome', lang), {
+      parse_mode: 'HTML',
+      reply_markup: mainMenuKeyboard(lang),
+    });
+    trackWelcomeMsg(chatId, sent.message_id);
   });
 }
 
@@ -243,36 +364,48 @@ async function runBackgroundVerify(params: {
       const errText = /expired|does not exist/i.test(msg)
         ? t('connect_expired', lang)
         : `${t('connect_failed', lang)}\n\n<code>${esc(msg)}</code>`;
-      await bot.api.sendMessage(chatId, errText, {
+      const errMsg = await bot.api.sendMessage(chatId, errText, {
         parse_mode: 'HTML',
         reply_markup: mainMenuKeyboard(lang),
       });
+      trackWelcomeMsg(chatId, errMsg.message_id);
       wipeDir(tempDir);
       return;
     }
 
     const statusResult = await bawStatus(tempDir);
     if (!statusResult.success || statusResult.data.status !== 'CONNECTED') {
-      await bot.api.sendMessage(chatId, t('connect_failed', lang), {
+      const errMsg = await bot.api.sendMessage(chatId, t('connect_failed', lang), {
         parse_mode: 'HTML',
         reply_markup: mainMenuKeyboard(lang),
       });
+      trackWelcomeMsg(chatId, errMsg.message_id);
       await logoutAndWipeSession(tempDir);
       return;
     }
 
     const addrResult = await bawAddress(tempDir);
     if (!addrResult.success) {
-      await bot.api.sendMessage(chatId, `${t('connect_failed', lang)}\n\n<code>${esc(addrResult.error.message)}</code>`, {
-        parse_mode: 'HTML',
-      });
+      const errMsg = await bot.api.sendMessage(
+        chatId,
+        `${t('connect_failed', lang)}\n\n<code>${esc(addrResult.error.message)}</code>`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: mainMenuKeyboard(lang),
+        }
+      );
+      trackWelcomeMsg(chatId, errMsg.message_id);
       await logoutAndWipeSession(tempDir);
       return;
     }
 
     const bscAddr = addrResult.data.addresses.find((a) => a.binanceChainId === config.BINANCE_CHAIN_ID);
     if (!bscAddr) {
-      await bot.api.sendMessage(chatId, '❌ Could not find BSC (chain 56) wallet address.');
+      const errMsg = await bot.api.sendMessage(chatId, '❌ Could not find BSC (chain 56) wallet address.', {
+        parse_mode: 'HTML',
+        reply_markup: mainMenuKeyboard(lang),
+      });
+      trackWelcomeMsg(chatId, errMsg.message_id);
       await logoutAndWipeSession(tempDir);
       return;
     }
@@ -390,7 +523,9 @@ async function runBackgroundVerify(params: {
     await bot.api
       .sendMessage(chatId, t('error_generic', lang, err instanceof Error ? err.message : String(err)), {
         parse_mode: 'HTML',
+        reply_markup: mainMenuKeyboard(lang),
       })
+      .then((m) => trackWelcomeMsg(chatId, m.message_id))
       .catch(() => {});
   }
 }
